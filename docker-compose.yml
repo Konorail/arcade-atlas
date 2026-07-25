@@ -1,0 +1,14 @@
+services:
+  arcade-atlas:
+    build:
+      context: .
+    container_name: arcade-atlas
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/data/arcade-atlas.sqlite
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data

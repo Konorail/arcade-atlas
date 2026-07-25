@@ -1,0 +1,47 @@
+<%- include('partials/header', { title: '机台类型管理' }) %>
+<section class="grid two-columns">
+  <article class="panel stack">
+    <h1><%= editing ? '编辑机台类型' : '新建机台类型' %></h1>
+    <form method="post" action="<%= editing ? `/admin/machine-types/${editing.id}` : '/admin/machine-types' %>" class="stack">
+      <label>名称<input name="name" required value="<%= editing?.name || '' %>" /></label>
+      <label>品牌<input name="brand" value="<%= editing?.brand || '' %>" /></label>
+      <label>型号<input name="model" value="<%= editing?.model || '' %>" /></label>
+      <label>分类<input name="category" value="<%= editing?.category || '' %>" /></label>
+      <label>默认图片 URL<input name="image" value="<%= editing?.image || '' %>" /></label>
+      <label>描述<textarea name="description" rows="4"><%= editing?.description || '' %></textarea></label>
+      <label>备注<textarea name="notes" rows="3"><%= editing?.notes || '' %></textarea></label>
+      <label>状态
+        <select name="status">
+          <% statuses.machineTypeStatuses.forEach((status) => { %>
+            <option value="<%= status %>" <%= (editing?.status || 'active') === status ? 'selected' : '' %>><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+      <div class="actions">
+        <button class="button" type="submit">保存</button>
+        <% if (editing) { %><a class="button secondary" href="/admin/machine-types">取消</a><% } %>
+      </div>
+    </form>
+  </article>
+
+  <article class="panel stack">
+    <h2>类型列表</h2>
+    <table>
+      <thead><tr><th>名称</th><th>品牌</th><th>型号</th><th>分类</th><th>使用中机台</th><th>状态</th><th></th></tr></thead>
+      <tbody>
+        <% machineTypes.forEach((type) => { %>
+          <tr>
+            <td><%= type.name %></td>
+            <td><%= type.brand || '-' %></td>
+            <td><%= type.model || '-' %></td>
+            <td><%= type.category || '-' %></td>
+            <td><%= type.active_machine_count || 0 %></td>
+            <td><%= type.status %></td>
+            <td><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </article>
+</section>
+<%- include('partials/footer') %>

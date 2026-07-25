@@ -1,0 +1,78 @@
+<%- include('partials/header', { title: machine.name }) %>
+<section class="grid two-columns">
+  <article class="panel stack">
+    <h1>机台基本信息</h1>
+    <form method="post" action="/admin/machines/<%= machine.id %>" class="stack">
+      <label>所属机台类型
+        <select name="machine_type_id" required>
+          <% machineTypes.forEach((type) => { %>
+            <option value="<%= type.id %>" <%= machine.machine_type_id === type.id ? 'selected' : '' %>><%= type.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>机台名称<input name="name" required value="<%= machine.name %>" /></label>
+      <label>机台编号<input name="machine_code" required value="<%= machine.machine_code %>" /></label>
+      <label>位置<input name="location" required value="<%= machine.location %>" /></label>
+      <label>状态
+        <select name="status">
+          <% statuses.machineStatuses.forEach((status) => { %>
+            <option value="<%= status %>" <%= machine.status === status ? 'selected' : '' %>><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>描述<textarea name="description" rows="4"><%= machine.description || '' %></textarea></label>
+      <label>备注<textarea name="notes" rows="3"><%= machine.notes || '' %></textarea></label>
+      <button class="button" type="submit">保存机台信息</button>
+    </form>
+  </article>
+
+  <article class="panel stack">
+    <h2>二维码</h2>
+    <img class="qr-image" src="<%= qrCodeDataUrl %>" alt="<%= machine.name %> 二维码" />
+    <p>公开访问地址：<code>/machine/<%= machine.qr_token %></code></p>
+    <div class="actions">
+      <a class="button" href="/admin/machines/<%= machine.id %>/qr.png">下载二维码</a>
+      <form method="post" action="/admin/machines/<%= machine.id %>/regenerate-qr">
+        <button class="button secondary" type="submit">重新生成二维码</button>
+      </form>
+    </div>
+  </article>
+</section>
+
+<section class="grid two-columns top-gap">
+  <article class="panel stack">
+    <h2>最近报修记录</h2>
+    <% if (history.recentRepairs.length === 0) { %>
+      <p>暂无报修记录。</p>
+    <% } else { %>
+      <div class="stack">
+        <% history.recentRepairs.forEach((repair) => { %>
+          <article class="card stack compact">
+            <a href="/admin/repairs/<%= repair.id %>"><strong>#<%= repair.id %> · <%= repair.status %></strong></a>
+            <span><%= repair.created_at %></span>
+            <p><%= repair.content %></p>
+          </article>
+        <% }) %>
+      </div>
+    <% } %>
+  </article>
+
+  <article class="panel stack">
+    <h2>最近维修日志</h2>
+    <% if (history.recentMaintenanceLogs.length === 0) { %>
+      <p>暂无维修日志。</p>
+    <% } else { %>
+      <div class="stack">
+        <% history.recentMaintenanceLogs.forEach((log) => { %>
+          <article class="card stack compact">
+            <strong><%= log.operator_name %></strong>
+            <span><%= log.created_at %></span>
+            <p><%= log.content %></p>
+            <span>结果：<%= log.result %></span>
+          </article>
+        <% }) %>
+      </div>
+    <% } %>
+  </article>
+</section>
+<%- include('partials/footer') %>

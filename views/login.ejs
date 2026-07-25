@@ -1,0 +1,14 @@
+<%- include('partials/header', { title: '后台登录' }) %>
+<section class="panel stack narrow">
+  <h1>后台 OAuth 登录</h1>
+  <p>仅允许系统配置的 OAuth 账号访问后台。</p>
+  <% if (providers.length === 0) { %>
+    <p class="error">未配置任何 OAuth Provider，请先设置环境变量。</p>
+  <% } %>
+  <div class="stack">
+    <% providers.forEach((provider) => { %>
+      <a class="button" href="/auth/<%= provider.name %>/redirect">使用 <%= provider.displayName %> 登录</a>
+    <% }) %>
+  </div>
+</section>
+<%- include('partials/footer') %>

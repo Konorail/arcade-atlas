@@ -1,0 +1,45 @@
+<%- include('partials/header', { title: '报修记录管理' }) %>
+<section class="panel stack">
+  <h1>报修记录</h1>
+  <form method="get" action="/admin/repairs" class="filter-grid">
+    <label>机台
+      <select name="machine_id">
+        <option value="">全部</option>
+        <% machines.forEach((machine) => { %>
+          <option value="<%= machine.id %>" <%= String(filters.machine_id || '') === String(machine.id) ? 'selected' : '' %>><%= machine.name %></option>
+        <% }) %>
+      </select>
+    </label>
+    <label>状态
+      <select name="status">
+        <option value="">全部</option>
+        <% statuses.repairStatuses.forEach((status) => { %>
+          <option value="<%= status %>" <%= String(filters.status || '') === status ? 'selected' : '' %>><%= status %></option>
+        <% }) %>
+      </select>
+    </label>
+    <label>开始时间<input type="datetime-local" name="from" value="<%= filters.from || '' %>" /></label>
+    <label>结束时间<input type="datetime-local" name="to" value="<%= filters.to || '' %>" /></label>
+    <label>内容搜索<input name="query" value="<%= filters.query || '' %>" /></label>
+    <div class="actions"><button class="button" type="submit">筛选</button></div>
+  </form>
+
+  <table>
+    <thead><tr><th>ID</th><th>机台</th><th>编号</th><th>类型</th><th>状态</th><th>时间</th><th>问题描述</th><th></th></tr></thead>
+    <tbody>
+      <% repairs.forEach((repair) => { %>
+        <tr>
+          <td><%= repair.id %></td>
+          <td><%= repair.machine_name %></td>
+          <td><%= repair.machine_code %></td>
+          <td><%= repair.type_name %></td>
+          <td><%= repair.status %></td>
+          <td><%= repair.created_at %></td>
+          <td><%= repair.content %></td>
+          <td><a href="/admin/repairs/<%= repair.id %>">详情</a></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</section>
+<%- include('partials/footer') %>

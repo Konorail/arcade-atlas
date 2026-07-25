@@ -1,0 +1,61 @@
+<%- include('partials/header', { title: `报修 #${repair.id}` }) %>
+<section class="grid two-columns">
+  <article class="panel stack">
+    <h1>报修详情</h1>
+    <dl class="details-grid">
+      <div><dt>所属机台</dt><dd><%= repair.machine_name %></dd></div>
+      <div><dt>机台编号</dt><dd><%= repair.machine_code %></dd></div>
+      <div><dt>机台类型</dt><dd><%= repair.type_name %></dd></div>
+      <div><dt>报修时间</dt><dd><%= repair.created_at %></dd></div>
+      <div class="full"><dt>问题内容</dt><dd><%= repair.content %></dd></div>
+    </dl>
+    <form method="post" action="/admin/repairs/<%= repair.id %>/status" class="inline-form">
+      <label>当前状态
+        <select name="status">
+          <% statuses.repairStatuses.forEach((status) => { %>
+            <option value="<%= status %>" <%= repair.status === status ? 'selected' : '' %>><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+      <button class="button" type="submit">更新状态</button>
+    </form>
+  </article>
+
+  <article class="panel stack">
+    <h2>添加维修日志</h2>
+    <form method="post" action="/admin/repairs/<%= repair.id %>/maintenance-logs" class="stack">
+      <label>处理内容<textarea name="content" rows="6" required></textarea></label>
+      <label>处理结果<textarea name="result" rows="3" required placeholder="例如：已解决 / 未解决 / 更换排线后恢复"></textarea></label>
+      <label>同步更新报修状态
+        <select name="repair_status">
+          <option value="">保持不变</option>
+          <% statuses.repairStatuses.forEach((status) => { %>
+            <option value="<%= status %>"><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+      <button class="button" type="submit">新增维修日志</button>
+    </form>
+  </article>
+</section>
+
+<section class="panel stack top-gap">
+  <h2>相关维修日志</h2>
+  <% if (maintenanceLogs.length === 0) { %>
+    <p>暂无维修日志。</p>
+  <% } else { %>
+    <div class="stack">
+      <% maintenanceLogs.forEach((log) => { %>
+        <article class="card stack compact">
+          <div class="inline-row">
+            <strong><%= log.operator_name %></strong>
+            <span><%= log.created_at %></span>
+          </div>
+          <p><%= log.content %></p>
+          <span>结果：<%= log.result %></span>
+        </article>
+      <% }) %>
+    </div>
+  <% } %>
+</section>
+<%- include('partials/footer') %>
