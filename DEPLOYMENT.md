@@ -46,7 +46,7 @@
 APP_NAME=Arcade Atlas
 APP_URL=https://atlas.example.com
 PORT=3000
-DATABASE_PATH=/opt/arcade-atlas/data/arcade-atlas.sqlite
+DATABASE_PATH=./data/arcade-atlas.sqlite
 GITHUB_CLIENT_ID=your-github-client-id
 GITHUB_CLIENT_SECRET=your-github-client-secret
 OAUTH_ALLOWLIST=github:123456,github:789012
@@ -58,7 +58,7 @@ ALLOW_FIRST_LOGIN=false
 - `APP_NAME`：站点名称
 - `APP_URL`：系统对外访问地址，二维码和 OAuth 回调都依赖它
 - `PORT`：应用监听端口，通常保持 `3000`
-- `DATABASE_PATH`：SQLite 数据库文件路径
+- `DATABASE_PATH`：SQLite 数据库文件路径，默认使用项目目录下的 `./data/arcade-atlas.sqlite`
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 凭据
 - `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，格式为 `github:用户ID`
 - `ALLOW_FIRST_LOGIN`：是否允许首位访问者在不在白名单时自动创建管理员
@@ -277,6 +277,14 @@ cp /opt/arcade-atlas/data/arcade-atlas.sqlite /opt/arcade-atlas/data/arcade-atla
 bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
 ```
 
+如果远程脚本下载失败，可回退为先克隆仓库再运行本地脚本：
+
+```bash
+git clone https://github.com/Konorail/arcade-atlas.git
+cd arcade-atlas
+bash ./scripts/bootstrap-deploy-local.sh --mode docker
+```
+
 如果已经在项目目录中，可直接运行：
 
 ```bash
@@ -290,6 +298,7 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 - 检查当前用户权限
 - 自动 clone 或 pull 项目代码
 - 检查 Git 工作区是否干净，避免覆盖本地改动
+- 如果已在仓库目录中运行本地脚本，会直接使用当前目录并跳过 Git 更新
 - 检查 `.env` 是否存在，并仅补齐缺失配置
 - 保留已有数据库和重要配置
 - 对必须由用户提供的配置进行提示或交互输入
@@ -331,7 +340,7 @@ cp .env.example .env
 - `GITHUB_CLIENT_SECRET`
 - `OAUTH_ALLOWLIST`
 
-`docker-compose.yml` 会自动将容器内数据库路径固定为 `/app/data/arcade-atlas.sqlite`，因此一键部署时无需单独修改 `DATABASE_PATH`。
+`docker-compose.yml` 会自动将容器内数据库路径固定为 `/app/data/arcade-atlas.sqlite`，并跟随 `.env` 中的 `PORT` 暴露对应端口，因此一键部署时通常无需额外修改 `DATABASE_PATH`。
 
 ### 3. 一键启动
 
