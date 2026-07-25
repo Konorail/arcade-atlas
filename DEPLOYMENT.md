@@ -1,442 +1,313 @@
 # Arcade Atlas 部署说明
 
-本文档提供两种部署方式，并且同时保留：
-
-1. **手动部署**：适合 Debian / Ubuntu 服务器做长期运行、接入 systemd 与 Nginx。
-2. **一键部署**：适合快速上线或测试，使用 Docker Compose 直接启动。
-
-如果你希望直接用脚本完成拉取、环境检查、配置补全、安装、启动与健康检查，可以使用仓库内的 [`scripts/bootstrap-deploy.sh`](./scripts/bootstrap-deploy.sh)。
+本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
 
 ---
 
-## 一、部署前准备
+## 一、支持的部署方式
 
-### 1. 服务器建议
-
-- 操作系统：Debian 12+ / Ubuntu 22.04+
-- CPU：1 核及以上
-- 内存：2 GB 及以上
-- 磁盘：至少 5 GB 可用空间
-- 网络：可以访问 GitHub OAuth 所需的 GitHub 接口
-
-### 2. 必备信息
-
-部署前请先准备：
-
-- 服务器公网 IP 或域名
-- 一个 GitHub OAuth App
-- 允许登录后台的 GitHub 用户 ID
-
-### 3. GitHub OAuth 回调地址
-
-系统后台登录依赖 GitHub OAuth。创建 GitHub OAuth App 时，回调地址需要与最终访问地址一致：
-
-- 本地测试示例：`http://localhost:3000/auth/github/callback`
-- 生产环境示例：`https://atlas.example.com/auth/github/callback`
-
-只要 `APP_URL` 变化，GitHub OAuth App 中的回调地址也要同步修改。
+1. **Docker Compose 一键部署**（推荐）
+2. **Node.js 手动部署**
 
 ---
 
-## 二、环境变量说明
+## 二、后台认证方式
 
-部署时至少需要确认以下配置：
+安装时脚本会明确要求你选择其中一种：
+
+1. **用户名 + 密码登录**
+2. **GitHub OAuth 登录**
+
+### 1. 用户名 + 密码登录
+
+部署脚本会：
+
+- 询问后台用户名
+- 以不回显的方式询问后台密码
+- 仅把密码哈希与盐写入 `.env`
+- 不会把明文密码输出到终端
+- 不会把真实密码写入 Git 仓库
+
+部署完成后，直接使用该用户名和密码访问：
+
+```text
+APP_URL/login
+```
+
+### 2. GitHub OAuth 登录
+
+脚本会直接告诉你要填写：
+
+- Homepage URL：`APP_URL`
+- Authorization callback URL：`APP_URL/auth/github/callback`
+- GitHub Client ID 的用途
+- GitHub Client Secret 的用途
+- GitHub 用户 ID 白名单的填写方式
+
+> 这里填写的是 GitHub 用户 **ID**，不是 GitHub 用户名。  
+> 可访问 `https://api.github.com/users/你的GitHub用户名`，查看返回 JSON 中的 `id` 字段。
+
+### 3. 安装后再启用 GitHub OAuth
+
+如果首次部署选择了“用户名 + 密码”，仍然可以在部署完成后进入后台：
+
+```text
+/admin/auth-settings
+```
+
+在这里补充 GitHub OAuth 配置并切换为：
+
+- `local`
+- `github`
+- `both`
+
+也就是说，首次认证方式与后续 OAuth 启用已经解耦。
+
+如果是 Docker 部署，后台保存认证配置后，请重启容器再让新配置生效。
+
+---
+
+## 三、关键环境变量
+
+`.env.example` 已与实际代码保持一致：
 
 ```env
 APP_NAME=Arcade Atlas
-APP_URL=https://atlas.example.com
+APP_URL=http://localhost:3000
 PORT=3000
 DATABASE_PATH=./data/arcade-atlas.sqlite
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-client-secret
-OAUTH_ALLOWLIST=github:123456,github:789012
+AUTH_MODE=local
+LOCAL_ADMIN_USERNAME=
+LOCAL_ADMIN_PASSWORD_HASH=
+LOCAL_ADMIN_PASSWORD_SALT=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+OAUTH_ALLOWLIST=
 ALLOW_FIRST_LOGIN=false
 ```
 
-字段说明：
+说明：
 
-- `APP_NAME`：站点名称
-- `APP_URL`：系统对外访问地址，二维码和 OAuth 回调都依赖它
-- `PORT`：应用监听端口，通常保持 `3000`
-- `DATABASE_PATH`：SQLite 数据库文件路径，默认使用项目目录下的 `./data/arcade-atlas.sqlite`
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 凭据
-- `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，格式为 `github:用户ID`
-- `ALLOW_FIRST_LOGIN`：是否允许首位访问者在不在白名单时自动创建管理员
+- `AUTH_MODE`：`local` / `github` / `both`
+- `LOCAL_ADMIN_USERNAME`：本地后台用户名
+- `LOCAL_ADMIN_PASSWORD_HASH` / `LOCAL_ADMIN_PASSWORD_SALT`：本地后台密码哈希配置
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
+- `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，例如：`github:123456,github:789012`
+- `ALLOW_FIRST_LOGIN`：只影响 GitHub OAuth 首次登录自动建号逻辑
+- Docker 部署推荐保持 `DATABASE_PATH=./data/arcade-atlas.sqlite`；容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
 
-> 建议生产环境将 `ALLOW_FIRST_LOGIN` 保持为 `false`，并明确配置 `OAUTH_ALLOWLIST`。
+`.env` 已被 `.gitignore` 忽略；`.env.example` 仅保留占位符，不包含真实密钥。
 
 ---
 
-## 三、方案 A：Debian / Ubuntu 手动部署
+## 四、Docker / Docker Compose Plugin 安装逻辑
 
-以下步骤适用于 Debian / Ubuntu 服务器。
+部署脚本会按下面顺序执行：
 
-### 1. 安装系统依赖
+1. 检查当前系统是否为 Debian / Ubuntu
+2. 读取 `/etc/os-release`
+3. 读取 `VERSION_CODENAME`
+4. 检查 `docker` 是否已安装
+5. 检查 `docker compose version` 是否已可用
+6. 如果 Plugin 不可用，则动态添加 Docker 官方仓库
+7. 安装：
+   - `docker-ce`
+   - `docker-ce-cli`
+   - `containerd.io`
+   - `docker-buildx-plugin`
+   - `docker-compose-plugin`
+8. 安装完成后再次验证 `docker compose version`
 
-```bash
-sudo apt update
-sudo apt install -y curl git build-essential python3 nginx
-```
+### 1. 仓库地址生成规则
 
-安装 Node.js 22 LTS：
+不会写死 `bullseye`、`bookworm`、`trixie`。
 
-```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-```
-
-确认版本：
-
-```bash
-node -v
-npm -v
-```
-
-### 2. 创建部署目录
-
-```bash
-sudo mkdir -p /opt/arcade-atlas
-sudo chown -R "$USER":"$USER" /opt/arcade-atlas
-cd /opt/arcade-atlas
-```
-
-将项目代码放入该目录后，目录结构建议如下：
+脚本会动态生成：
 
 ```text
-/opt/arcade-atlas/
-├── .env
-├── data/
-├── dist/
-├── public/
-├── src/
-├── views/
-├── package.json
-└── package-lock.json
+https://download.docker.com/linux/<debian-or-ubuntu> ${VERSION_CODENAME} stable
 ```
-
-### 3. 配置环境变量
-
-复制示例文件：
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`：
-
-```bash
-nano .env
-```
-
-最少需要改成生产环境实际值：
-
-- `APP_URL` 改成真实访问地址
-- `DATABASE_PATH` 改成服务器上的持久化路径，例如 `/opt/arcade-atlas/data/arcade-atlas.sqlite`
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` 填入真实 OAuth 信息
-- `OAUTH_ALLOWLIST` 填入允许登录后台的 GitHub 用户 ID
-
-### 4. 安装依赖并构建
-
-```bash
-npm ci
-npm run build
-```
-
-### 5. 首次前台启动检查
-
-先前台运行一次，确认配置正常：
-
-```bash
-npm run start
-```
-
-浏览器访问：
-
-- 首页：`http://服务器IP:3000/`
-- 登录页：`http://服务器IP:3000/login`
-
-确认可以启动后，按 `Ctrl + C` 停止。
-
-### 6. 配置 systemd 常驻运行
-
-创建服务文件：
-
-```bash
-sudo nano /etc/systemd/system/arcade-atlas.service
-```
-
-写入以下内容：
-
-```ini
-[Unit]
-Description=Arcade Atlas
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/arcade-atlas
-EnvironmentFile=/opt/arcade-atlas/.env
-ExecStart=/usr/bin/node /opt/arcade-atlas/dist/server.js
-Restart=always
-RestartSec=5
-User=www-data
-Group=www-data
-
-[Install]
-WantedBy=multi-user.target
-```
-
-为运行用户准备目录权限：
-
-```bash
-sudo chown -R www-data:www-data /opt/arcade-atlas
-```
-
-启动并设置开机自启：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now arcade-atlas
-sudo systemctl status arcade-atlas
-```
-
-查看日志：
-
-```bash
-sudo journalctl -u arcade-atlas -f
-```
-
-### 7. 配置 Nginx 反向代理
-
-创建站点配置：
-
-```bash
-sudo nano /etc/nginx/sites-available/arcade-atlas
-```
-
-示例配置：
-
-```nginx
-server {
-    listen 80;
-    server_name atlas.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-启用站点并重载：
-
-```bash
-sudo ln -s /etc/nginx/sites-available/arcade-atlas /etc/nginx/sites-enabled/arcade-atlas
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-如果使用 HTTPS，建议再配合证书工具（如 Let's Encrypt）为域名启用 TLS，并将 `APP_URL` 配置为 `https://你的域名`。
-
-### 8. 更新流程
-
-后续更新版本时可按以下顺序执行：
-
-```bash
-cd /opt/arcade-atlas
-npm ci
-npm run build
-sudo systemctl restart arcade-atlas
-```
-
-### 9. 数据备份
-
-数据库默认为 SQLite 文件，备份时只需要保存 `DATABASE_PATH` 对应的数据库文件及其所在目录即可。
 
 例如：
 
-```bash
-cp /opt/arcade-atlas/data/arcade-atlas.sqlite /opt/arcade-atlas/data/arcade-atlas.sqlite.bak
-```
+- Debian 11 → `bullseye`
+- Debian 12 → `bookworm`
+- Debian 13 → `trixie`
+
+### 2. 兼容场景
+
+脚本已针对以下情况做了处理：
+
+- Debian 11 / 12 / 13
+- Ubuntu 常见 LTS 版本
+- 已安装 Docker、但未安装 Compose Plugin
+- 已安装旧版 `docker-compose`
+- `docker compose version` 已经可用
+- Docker 官方仓库不支持当前 `VERSION_CODENAME`
+
+### 3. 失败时的处理方式
+
+如果某一步失败，脚本会立刻停止，并给出清晰提示，例如：
+
+- `apt update` 失败
+- Docker 官方仓库不存在当前系统代号
+- Docker GPG Key 配置失败
+- Docker 组件安装失败
+- Docker 服务启动失败
+- `docker compose config` 失败
+- 健康检查失败
 
 ---
 
-## 四、方案 B：Docker Compose 一键部署
+## 五、Docker Compose 部署
 
-仓库已提供 `Dockerfile` 和 `docker-compose.yml`，可直接在 Debian / Ubuntu 上一键启动。
-
-### 0. 使用自动部署脚本（推荐）
-
-直接远程执行脚本：
+### 1. 直接运行脚本
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
 ```
 
-如果远程脚本下载失败，可回退为先克隆仓库再运行本地脚本：
-
-```bash
-git clone https://github.com/Konorail/arcade-atlas.git
-cd arcade-atlas
-bash ./scripts/bootstrap-deploy-local.sh --mode docker
-```
-
-如果已经在项目目录中，可直接运行：
+如果仓库已经在本地：
 
 ```bash
 bash ./scripts/bootstrap-deploy-local.sh --mode docker
 ```
 
-脚本默认会：
+### 2. 脚本完成的工作
 
-- 检查当前系统是否为 Debian / Ubuntu
-- 检查并补装 Git、curl、Docker、Docker Compose 等依赖
-- 检查当前用户权限
-- 自动 clone 或 pull 项目代码
-- 检查 Git 工作区是否干净，避免覆盖本地改动
-- 如果已在仓库目录中运行本地脚本，会直接使用当前目录并跳过 Git 更新
-- 检查 `.env` 是否存在，并仅补齐缺失配置
-- 保留已有数据库和重要配置
-- 对必须由用户提供的配置进行提示或交互输入
-- 在启动前提醒可能影响现有服务的操作
-- 启动容器并自动做健康检查
+- 检查系统环境
+- 检查或安装 Docker
+- 检查或安装 Docker Compose Plugin
+- 选择后台认证方式
+- 生成 `.env`
+- 在 `docker compose up -d` 前预检查认证配置
+- 执行 `docker compose config`
+- 执行 `docker compose up -d --build`
+- 执行健康检查：`/health`
+- 输出访问地址与登录方式
 
-支持参数：
+### 3. 持久化数据
 
-```bash
-bash ./scripts/bootstrap-deploy.sh --mode docker --target-dir /opt/arcade-atlas
-```
-
-### 1. 安装 Docker 与 Compose
-
-```bash
-sudo apt update
-sudo apt install -y docker.io docker-compose-plugin
-sudo systemctl enable --now docker
-```
-
-### 2. 准备项目与环境变量
-
-进入项目目录：
-
-```bash
-cd /opt/arcade-atlas
-```
-
-复制环境变量模板：
-
-```bash
-cp .env.example .env
-```
-
-至少修改以下字段：
-
-- `APP_URL`
-- `GITHUB_CLIENT_ID`
-- `GITHUB_CLIENT_SECRET`
-- `OAUTH_ALLOWLIST`
-
-`docker-compose.yml` 会自动将容器内数据库路径固定为 `/app/data/arcade-atlas.sqlite`，并跟随 `.env` 中的 `PORT` 暴露对应端口，因此一键部署时通常无需额外修改 `DATABASE_PATH`。
-
-### 3. 一键启动
-
-```bash
-docker compose up -d --build
-```
-
-启动后可查看状态：
-
-```bash
-docker compose ps
-docker compose logs -f
-```
-
-默认会：
-
-- 构建应用镜像
-- 自动安装依赖并编译 TypeScript
-- 将宿主机 `./data` 目录挂载到容器 `/app/data`
-- 对外暴露 `3000` 端口
-
-### 4. 访问系统
-
-浏览器访问：
-
-- `http://服务器IP:3000/`
-- `http://服务器IP:3000/login`
-
-如果前面接了 Nginx 或云负载均衡，请把 `APP_URL` 设置为最终对外域名。
-
-### 5. 停止与更新
-
-停止服务：
-
-```bash
-docker compose down
-```
-
-更新并重新部署：
-
-```bash
-docker compose down
-docker compose up -d --build
-```
-
-### 6. 数据持久化
-
-`docker-compose.yml` 已将数据库目录映射到宿主机：
+`docker-compose.yml` 会把宿主机目录映射到容器：
 
 ```text
 ./data -> /app/data
 ```
 
-因此重建容器不会丢失 SQLite 数据，但删除宿主机 `data` 目录会导致数据库丢失。
+默认情况下，`.env` 中的：
+
+```text
+DATABASE_PATH=./data/arcade-atlas.sqlite
+```
+
+会在容器内解析为：
+
+```text
+/app/data/arcade-atlas.sqlite
+```
+
+因此容器重建后数据库仍然保留，只要宿主机 `data` 目录没有删除即可。
+
+### 4. 健康检查
+
+项目提供：
+
+```text
+GET /health
+```
+
+`docker-compose.yml` 已使用该地址配置健康检查。
 
 ---
 
-## 五、部署后检查清单
+## 六、Node.js 手动部署
 
-部署完成后建议逐项确认：
+### 1. 安装依赖
 
-- 首页可以正常打开
-- `/login` 可以跳转到 GitHub OAuth
-- OAuth 回调后可以进入 `/admin`
-- 新建机台后可以打开二维码对应页面
-- 提交报修后后台可以看到记录
-- 数据库文件已按预期落在 `DATABASE_PATH` 指定位置
+```bash
+sudo apt-get update
+sudo apt-get install -y curl git build-essential python3
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+### 2. 安装项目依赖并构建
+
+```bash
+npm ci
+npm run build
+```
+
+### 3. 启动服务
+
+```bash
+npm run start
+```
 
 ---
 
-## 六、常见问题
+## 七、部署后检查
 
-### 1. 登录后提示无法进入后台
+建议确认：
 
-优先检查：
+1. 首页可以打开
+2. `/health` 返回正常
+3. `/login` 能看到正确的登录方式
+4. 用户名密码模式下可直接登录后台
+5. GitHub OAuth 模式下能正常跳转并回调
+6. `/admin/auth-settings` 可查看当前认证配置
+7. 数据库文件正确落在 `DATABASE_PATH` 所指位置
 
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` 是否填写正确
-- GitHub OAuth 回调地址是否与 `APP_URL` 完全一致
-- 当前 GitHub 用户 ID 是否已经加入 `OAUTH_ALLOWLIST`
+---
 
-### 2. 二维码打开后地址不正确
+## 八、常见问题
 
-通常是 `APP_URL` 配置错误。修改后重启应用即可。
+### 1. `docker compose version` 不可用
 
-### 3. 数据库文件没有生成
+请先检查：
 
-请检查：
+```bash
+docker compose version
+```
 
-- `DATABASE_PATH` 是否可写
-- 运行用户是否有目录权限
-- Docker 部署时宿主机 `./data` 目录是否可写
+如果失败，再检查：
 
-### 4. 端口无法访问
+```bash
+. /etc/os-release
+echo "$ID $VERSION_CODENAME"
+cat /etc/apt/sources.list.d/docker.list
+sudo apt-get update
+```
 
-请检查：
+### 2. GitHub OAuth 回调失败
 
-- 应用是否已启动
-- `PORT` 是否与反向代理配置一致
-- 服务器防火墙 / 安全组是否放行对应端口
+请确认：
+
+- `APP_URL` 是否正确
+- GitHub OAuth App 的 Homepage URL 是否等于 `APP_URL`
+- GitHub OAuth App 的 callback URL 是否等于 `APP_URL/auth/github/callback`
+- 当前 GitHub 用户 ID 是否已加入 `OAUTH_ALLOWLIST`
+
+### 3. 本地用户名密码无法登录
+
+请确认：
+
+- `AUTH_MODE` 是否为 `local` 或 `both`
+- `LOCAL_ADMIN_USERNAME` 是否存在
+- `LOCAL_ADMIN_PASSWORD_HASH` 与 `LOCAL_ADMIN_PASSWORD_SALT` 是否存在
+- 部署后是否已重启服务
+
+### 4. 健康检查失败
+
+Docker 部署可检查：
+
+```bash
+docker compose ps
+docker compose logs --tail=200
+```
+
+Node 部署可检查：
+
+```bash
+cat .deploy/app.log
+```

@@ -1,12 +1,16 @@
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
-import { db, MachineStatus, MachineTypeStatus, RepairStatus, UserStatus } from './db';
-import { config } from './config';
+import { AuthMode, ProviderConfig, authModeAllowsGithub, authModeAllowsLocal, config, getRedirectUri, parseAllowlist, serializeAllowlist } from './config';
+import { db, MachineStatus, MachineTypeStatus, RepairStatus, UserAuthType, UserStatus } from './db';
 
 export type User = {
   id: number;
-  oauth_provider: string;
-  oauth_provider_user_id: string;
+  auth_type: UserAuthType;
+  username: string | null;
+  password_hash: string | null;
+  password_salt: string | null;
+  oauth_provider: string | null;
+  oauth_provider_user_id: string | null;
   name: string;
   email: string | null;
   avatar: string | null;
@@ -79,9 +83,42 @@ export type MachineView = {
   recentMaintenanceLogs: MaintenanceLog[];
 };
 
+export type GithubOAuthSettings = {
+  clientId: string;
+  clientSecret: string;
+  allowlist: Set<string>;
+  allowlistRaw: string;
+};
+
+export type AuthSettingsView = {
+  authMode: AuthMode;
+  localUsers: Array<Pick<User, 'id' | 'username' | 'name' | 'status'>>;
+  github: {
+    configured: boolean;
+    clientId: string;
+    allowlistRaw: string;
+    callbackUrl: string;
+    loginUrl: string;
+  };
+};
+
 const repairStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED'];
 const machineStatuses: MachineStatus[] = ['normal', 'maintenance', 'disabled'];
 const machineTypeStatuses: MachineTypeStatus[] = ['active', 'inactive'];
+const githubProviderTemplate = {
+  name: 'github' as const,
+  displayName: 'GitHub',
+  authorizeUrl: 'https://github.com/login/oauth/authorize',
+  tokenUrl: 'https://github.com/login/oauth/access_token',
+  userUrl: 'https://api.github.com/user',
+  scopes: ['read:user', 'user:email'],
+};
+const settingKeys = {
+  authMode: 'auth.mode',
+  githubClientId: 'github.client_id',
+  githubClientSecret: 'github.client_secret',
+  githubAllowlist: 'github.allowlist',
+} as const;
 
 function now(): string {
   return new Date().toISOString();
@@ -121,6 +158,170 @@ function optionalStatus<T extends string>(value: unknown, allowed: readonly T[],
     throw new Error(`Invalid ${fieldName}.`);
   }
   return value as T;
+}
+
+function getSetting(key: string): string | undefined {
+  const row = db.prepare(`SELECT setting_value FROM app_settings WHERE setting_key = ?`).get(key) as { setting_value: string } | undefined;
+  return row?.setting_value;
+}
+
+function setSetting(key: string, value: string): void {
+  const timestamp = now();
+  db.prepare(
+    `INSERT INTO app_settings (setting_key, setting_value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`,
+  ).run(key, value, timestamp);
+}
+
+export function deleteSetting(key: string): void {
+  db.prepare(`DELETE FROM app_settings WHERE setting_key = ?`).run(key);
+}
+
+export function getEffectiveAuthMode(): AuthMode {
+  const stored = getSetting(settingKeys.authMode);
+  if (stored === 'local' || stored === 'github' || stored === 'both') {
+    return stored;
+  }
+  return config.authMode;
+}
+
+export function setEffectiveAuthMode(authMode: AuthMode): void {
+  setSetting(settingKeys.authMode, authMode);
+}
+
+export function getGithubOAuthSettings(): GithubOAuthSettings | null {
+  const clientId = getSetting(settingKeys.githubClientId) ?? config.oauthEnvConfig?.clientId;
+  const clientSecret = getSetting(settingKeys.githubClientSecret) ?? config.oauthEnvConfig?.clientSecret;
+
+  if (!clientId || !clientSecret) {
+    return null;
+  }
+
+  const allowlistRaw = getSetting(settingKeys.githubAllowlist) ?? serializeAllowlist(config.oauthEnvConfig?.allowlist ?? []);
+  return {
+    clientId,
+    clientSecret,
+    allowlist: parseAllowlist(allowlistRaw),
+    allowlistRaw,
+  };
+}
+
+export function saveGithubOAuthSettings(input: { clientId: string; clientSecret?: string; allowlistRaw: string }): void {
+  const clientId = requiredText(input.clientId, 'GitHub Client ID');
+  const existing = getGithubOAuthSettings();
+  const clientSecret = input.clientSecret?.trim() || existing?.clientSecret;
+
+  if (!clientSecret) {
+    throw new Error('GitHub Client Secret is required when enabling GitHub OAuth.');
+  }
+
+  setSetting(settingKeys.githubClientId, clientId);
+  setSetting(settingKeys.githubClientSecret, clientSecret);
+  setSetting(settingKeys.githubAllowlist, input.allowlistRaw.trim());
+}
+
+export function getEnabledProviders(): ProviderConfig[] {
+  if (!authModeAllowsGithub(getEffectiveAuthMode())) {
+    return [];
+  }
+
+  const github = getGithubOAuthSettings();
+  if (!github) {
+    return [];
+  }
+
+  return [
+    {
+      ...githubProviderTemplate,
+      clientId: github.clientId,
+      clientSecret: github.clientSecret,
+    },
+  ];
+}
+
+export function getOAuthAllowlist(): Set<string> {
+  return getGithubOAuthSettings()?.allowlist ?? new Set();
+}
+
+export function listLocalUsers(): Array<Pick<User, 'id' | 'username' | 'name' | 'status'>> {
+  return db
+    .prepare(`SELECT id, username, name, status FROM users WHERE auth_type = 'local' ORDER BY id ASC`)
+    .all() as Array<Pick<User, 'id' | 'username' | 'name' | 'status'>>;
+}
+
+export function isLocalLoginEnabled(): boolean {
+  return authModeAllowsLocal(getEffectiveAuthMode()) && listLocalUsers().length > 0;
+}
+
+export function findLocalUserByUsername(username: string): User | null {
+  return (
+    (db.prepare(`SELECT * FROM users WHERE auth_type = 'local' AND username = ?`).get(username) as User | undefined) ?? null
+  );
+}
+
+export function upsertLocalUser(input: { username: string; passwordHash: string; passwordSalt: string; name?: string }): User {
+  const username = requiredText(input.username, 'Local username');
+  const passwordHash = requiredText(input.passwordHash, 'Local password hash');
+  const passwordSalt = requiredText(input.passwordSalt, 'Local password salt');
+  const timestamp = now();
+  const existing = findLocalUserByUsername(username);
+
+  if (existing) {
+    db.prepare(
+      `UPDATE users
+       SET auth_type = 'local', password_hash = ?, password_salt = ?, name = ?, status = 'active', updated_at = ?
+       WHERE id = ?`,
+    ).run(passwordHash, passwordSalt, input.name?.trim() || existing.name, timestamp, existing.id);
+    return db.prepare(`SELECT * FROM users WHERE id = ?`).get(existing.id) as User;
+  }
+
+  const result = db
+    .prepare(
+      `INSERT INTO users (
+        auth_type,
+        username,
+        password_hash,
+        password_salt,
+        oauth_provider,
+        oauth_provider_user_id,
+        name,
+        email,
+        avatar,
+        status,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 'active', ?, ?)`,
+    )
+    .run('local', username, passwordHash, passwordSalt, input.name?.trim() || username, timestamp, timestamp);
+
+  return db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid) as User;
+}
+
+export function ensureBootstrapAuthConfig(): void {
+  if (config.localAdminBootstrap) {
+    upsertLocalUser({
+      username: config.localAdminBootstrap.username,
+      passwordHash: config.localAdminBootstrap.passwordHash,
+      passwordSalt: config.localAdminBootstrap.passwordSalt,
+      name: config.localAdminBootstrap.username,
+    });
+  }
+}
+
+export function getAuthSettingsView(): AuthSettingsView {
+  const github = getGithubOAuthSettings();
+  return {
+    authMode: getEffectiveAuthMode(),
+    localUsers: listLocalUsers(),
+    github: {
+      configured: Boolean(github),
+      clientId: github?.clientId ?? '',
+      allowlistRaw: github?.allowlistRaw ?? '',
+      callbackUrl: getRedirectUri('github'),
+      loginUrl: `${config.appUrl}/login`,
+    },
+  };
 }
 
 export function createQrToken(): string {
@@ -191,7 +392,7 @@ export function upsertOAuthUser(input: {
   if (existing) {
     db.prepare(
       `UPDATE users
-       SET name = ?, email = ?, avatar = ?, updated_at = ?
+       SET auth_type = 'oauth', name = ?, email = ?, avatar = ?, updated_at = ?
        WHERE id = ?`,
     ).run(input.name, input.email ?? null, input.avatar ?? null, timestamp, existing.id);
 
@@ -200,10 +401,22 @@ export function upsertOAuthUser(input: {
 
   const result = db
     .prepare(
-      `INSERT INTO users (oauth_provider, oauth_provider_user_id, name, email, avatar, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+      `INSERT INTO users (
+         auth_type,
+         username,
+         password_hash,
+         password_salt,
+         oauth_provider,
+         oauth_provider_user_id,
+         name,
+         email,
+         avatar,
+         status,
+         created_at,
+         updated_at
+       ) VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     )
-    .run(input.provider, input.providerUserId, input.name, input.email ?? null, input.avatar ?? null, timestamp, timestamp);
+    .run('oauth', input.provider, input.providerUserId, input.name, input.email ?? null, input.avatar ?? null, timestamp, timestamp);
 
   return db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid) as User;
 }

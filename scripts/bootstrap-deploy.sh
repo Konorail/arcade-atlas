@@ -10,6 +10,9 @@ ASSUME_YES=0
 SKIP_GIT_UPDATE=0
 SUDO=""
 DOCKER_BIN=(docker)
+OS_ID=""
+OS_PRETTY_NAME=""
+VERSION_CODENAME=""
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -23,13 +26,22 @@ error() {
   printf '[ERROR] %s\n' "$*" >&2
 }
 
-die() {
-  error "$*"
+step() {
+  printf '\n========== %s ==========\n' "$*"
+}
+
+fail_step() {
+  local message="$1"
+  shift || true
+  error "$message"
+  for item in "$@"; do
+    [[ -n "$item" ]] && error "$item"
+  done
   exit 1
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 用法：
   bash scripts/bootstrap-deploy.sh [选项]
 
@@ -45,7 +57,7 @@ usage() {
 示例：
   bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
   bash scripts/bootstrap-deploy.sh --mode docker --target-dir /opt/arcade-atlas
-EOF
+USAGE
 }
 
 confirm() {
@@ -66,7 +78,7 @@ confirm() {
 
 require_command() {
   local command_name="$1"
-  command -v "$command_name" >/dev/null 2>&1 || die "缺少命令：$command_name"
+  command -v "$command_name" >/dev/null 2>&1 || fail_step "缺少命令：$command_name"
 }
 
 ensure_sudo() {
@@ -77,7 +89,7 @@ ensure_sudo() {
 
   require_command sudo
   if ! sudo -v; then
-    die "当前用户没有可用的 sudo 权限，无法继续安装依赖或启动服务。"
+    fail_step "当前用户没有可用的 sudo 权限，无法继续安装依赖或启动服务。"
   fi
   SUDO="sudo"
 }
@@ -94,30 +106,40 @@ install_apt_packages() {
   done
 
   if [[ "${#missing[@]}" -eq 0 ]]; then
-    log "系统依赖已满足：${packages[*]}"
     return
   fi
 
   warn "缺少系统依赖：${missing[*]}"
-  confirm "将通过 apt 自动安装以上依赖，是否继续？" || die "用户取消安装依赖。"
+  confirm "将通过 apt 自动安装以上依赖，是否继续？" || fail_step "用户取消安装依赖。"
   ensure_sudo
-  $SUDO apt-get update
-  $SUDO apt-get install -y "${missing[@]}"
+  if ! $SUDO apt-get update; then
+    fail_step "apt update 失败。" "请检查服务器网络、DNS 或 APT 源配置后重试。" "建议执行：sudo apt-get update"
+  fi
+  if ! $SUDO apt-get install -y "${missing[@]}"; then
+    fail_step "系统依赖安装失败。" "请执行：sudo apt-get install -y ${missing[*]}"
+  fi
 }
 
 detect_os() {
-  [[ -f /etc/os-release ]] || die "无法识别当前系统。"
+  [[ -f /etc/os-release ]] || fail_step "无法识别当前系统。缺少 /etc/os-release。"
   # shellcheck disable=SC1091
   source /etc/os-release
 
-  case "${ID:-}" in
+  OS_ID="${ID:-}"
+  OS_PRETTY_NAME="${PRETTY_NAME:-$OS_ID}"
+  VERSION_CODENAME="${VERSION_CODENAME:-}"
+
+  case "$OS_ID" in
     debian|ubuntu)
-      log "检测到系统：${PRETTY_NAME:-$ID}"
       ;;
     *)
-      die "当前脚本仅支持 Debian / Ubuntu，检测到：${PRETTY_NAME:-unknown}"
+      fail_step "当前脚本仅支持 Debian / Ubuntu。" "当前系统：${OS_PRETTY_NAME:-unknown}"
       ;;
   esac
+
+  [[ -n "$VERSION_CODENAME" ]] || fail_step "无法识别当前系统版本代号 VERSION_CODENAME。" "请检查 /etc/os-release 是否包含 VERSION_CODENAME。"
+  log "检测到系统：$OS_PRETTY_NAME"
+  log "系统代号：$VERSION_CODENAME"
 }
 
 parse_args() {
@@ -152,7 +174,7 @@ parse_args() {
         exit 0
         ;;
       *)
-        die "未知参数：$1"
+        fail_step "未知参数：$1"
         ;;
     esac
   done
@@ -160,15 +182,16 @@ parse_args() {
   case "$MODE" in
     docker|node) ;;
     *)
-      die "--mode 仅支持 docker 或 node"
+      fail_step "--mode 仅支持 docker 或 node"
       ;;
   esac
 }
 
 ensure_base_commands() {
-  install_apt_packages ca-certificates curl git
+  install_apt_packages ca-certificates curl git gnupg python3
   require_command git
   require_command curl
+  require_command python3
 }
 
 clone_or_update_repo() {
@@ -187,8 +210,8 @@ clone_or_update_repo() {
   fi
 
   if [[ "$SKIP_GIT_UPDATE" -eq 1 ]]; then
-    [[ -d "$TARGET_DIR" ]] || die "指定了 --skip-git-update，但目录不存在：$TARGET_DIR"
-    [[ -d "$TARGET_DIR/.git" ]] || die "指定了 --skip-git-update，但目录不是 Git 仓库：$TARGET_DIR"
+    [[ -d "$TARGET_DIR" ]] || fail_step "指定了 --skip-git-update，但目录不存在：$TARGET_DIR"
+    [[ -d "$TARGET_DIR/.git" ]] || fail_step "指定了 --skip-git-update，但目录不是 Git 仓库：$TARGET_DIR"
     local status
     status="$(git -C "$TARGET_DIR" status --porcelain)"
     if [[ -n "$status" ]]; then
@@ -205,20 +228,24 @@ clone_or_update_repo() {
     local status
     status="$(git -C "$TARGET_DIR" status --porcelain)"
     if [[ -n "$status" ]]; then
-      die "项目目录存在未提交改动，已停止以避免覆盖用户文件：$TARGET_DIR"
+      fail_step "项目目录存在未提交改动，已停止以避免覆盖用户文件：$TARGET_DIR"
     fi
 
-    confirm "将执行 git pull --ff-only 更新项目，这可能影响当前服务，是否继续？" || die "用户取消更新项目。"
-    git -C "$TARGET_DIR" pull --ff-only
+    confirm "将执行 git pull --ff-only 更新项目，这可能影响当前服务，是否继续？" || fail_step "用户取消更新项目。"
+    if ! git -C "$TARGET_DIR" pull --ff-only; then
+      fail_step "git pull 失败。" "请手动执行：cd $TARGET_DIR && git pull --ff-only"
+    fi
     return
   fi
 
   if [[ -e "$TARGET_DIR" ]] && [[ -n "$(find "$TARGET_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
-    die "目标目录已存在且非空，为避免覆盖数据已停止：$TARGET_DIR"
+    fail_step "目标目录已存在且非空，为避免覆盖数据已停止：$TARGET_DIR"
   fi
 
-  confirm "将克隆项目到 $TARGET_DIR，是否继续？" || die "用户取消克隆项目。"
-  git clone "$REPO_URL" "$TARGET_DIR"
+  confirm "将克隆项目到 $TARGET_DIR，是否继续？" || fail_step "用户取消克隆项目。"
+  if ! git clone "$REPO_URL" "$TARGET_DIR"; then
+    fail_step "克隆仓库失败。" "请检查网络或仓库地址：$REPO_URL"
+  fi
 }
 
 append_missing_env_keys() {
@@ -239,14 +266,143 @@ read_env_value() {
 
 validate_http_url() {
   local value="$1"
-  [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || die "APP_URL 必须是合法的 http:// 或 https:// 地址。"
+  [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || fail_step "APP_URL 必须是合法的 http:// 或 https:// 地址。"
 }
 
 validate_port_value() {
   local value="$1"
-  [[ "$value" =~ ^[0-9]+$ ]] || die "PORT 必须是有效整数。"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail_step "PORT 必须是有效整数。"
   if (( value < 1 || value > 65535 )); then
-    die "PORT 必须是 1-65535 之间的整数。"
+    fail_step "PORT 必须是 1-65535 之间的整数。"
+  fi
+}
+
+is_truthy_value() {
+  local value="$1"
+  case "${value,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_env_path() {
+  local path_value="$1"
+  local default_value="$2"
+  local candidate="$path_value"
+
+  if [[ -z "$candidate" ]]; then
+    candidate="$default_value"
+  fi
+
+  python3 - "$TARGET_DIR" "$candidate" <<'PYTHON_RESOLVE_PATH'
+import os
+import sys
+
+target_dir = sys.argv[1]
+candidate = sys.argv[2]
+if os.path.isabs(candidate):
+    print(os.path.normpath(candidate))
+else:
+    print(os.path.normpath(os.path.join(target_dir, candidate)))
+PYTHON_RESOLVE_PATH
+}
+
+detect_github_oauth_user_state() {
+  local database_path="$1"
+  python3 - "$database_path" <<'PYTHON_CHECK_GITHUB_USERS'
+import os
+import sqlite3
+import sys
+
+database_path = sys.argv[1]
+
+if not os.path.exists(database_path):
+    print("missing")
+    raise SystemExit(0)
+
+try:
+    connection = sqlite3.connect(database_path)
+    cursor = connection.cursor()
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users' LIMIT 1")
+    if cursor.fetchone() is None:
+        print("missing")
+        raise SystemExit(0)
+
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)")}
+    if "oauth_provider" in columns and "status" in columns:
+        row = cursor.execute(
+            "SELECT 1 FROM users WHERE auth_type = 'oauth' AND oauth_provider = 'github' AND status = 'active' LIMIT 1"
+        ).fetchone()
+    elif "oauth_provider" in columns:
+        row = cursor.execute(
+            "SELECT 1 FROM users WHERE auth_type = 'oauth' AND oauth_provider = 'github' LIMIT 1"
+        ).fetchone()
+    else:
+        row = None
+
+    print("present" if row else "missing")
+except sqlite3.DatabaseError:
+    print("unknown")
+finally:
+    try:
+        connection.close()
+    except Exception:
+        pass
+PYTHON_CHECK_GITHUB_USERS
+}
+
+validate_auth_configuration_before_start() {
+  local env_file="$1"
+  local auth_mode client_id client_secret allowlist allow_first_login
+  local local_username password_hash password_salt database_path github_user_state
+  local missing_items=()
+
+  auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
+  allow_first_login="$(read_env_value "$env_file" "ALLOW_FIRST_LOGIN")"
+
+  case "$auth_mode" in
+    local|both)
+      local_username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+      password_hash="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_HASH")"
+      password_salt="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_SALT")"
+      [[ -n "$local_username" ]] || missing_items+=("LOCAL_ADMIN_USERNAME")
+      [[ -n "$password_hash" ]] || missing_items+=("LOCAL_ADMIN_PASSWORD_HASH")
+      [[ -n "$password_salt" ]] || missing_items+=("LOCAL_ADMIN_PASSWORD_SALT")
+      ;;
+  esac
+
+  case "$auth_mode" in
+    github|both)
+      client_id="$(read_env_value "$env_file" "GITHUB_CLIENT_ID")"
+      client_secret="$(read_env_value "$env_file" "GITHUB_CLIENT_SECRET")"
+      allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
+      [[ -n "$client_id" ]] || missing_items+=("GITHUB_CLIENT_ID")
+      [[ -n "$client_secret" ]] || missing_items+=("GITHUB_CLIENT_SECRET")
+
+      if [[ -z "$allowlist" ]] && ! is_truthy_value "$allow_first_login"; then
+        database_path="$(resolve_env_path "$(read_env_value "$env_file" "DATABASE_PATH")" "./data/arcade-atlas.sqlite")"
+        github_user_state="$(detect_github_oauth_user_state "$database_path")"
+        case "$github_user_state" in
+          missing)
+            missing_items+=("OAUTH_ALLOWLIST")
+            ;;
+          unknown)
+            warn "启动前未能读取现有数据库中的 GitHub 管理员账号信息：$database_path"
+            warn "当前 OAUTH_ALLOWLIST 为空，如需限制首次登录，建议先补全该配置。"
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [[ "${#missing_items[@]}" -gt 0 ]]; then
+    fail_step "启动前认证配置检查失败：AUTH_MODE=${auth_mode:-未设置} 的配置不完整。" \
+      "缺少以下配置：${missing_items[*]}" \
+      "请先补全 $env_file 后再重新启动容器。"
   fi
 }
 
@@ -283,8 +439,9 @@ prompt_value() {
 
   if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
     if [[ -z "$new_value" && "$allow_empty" -ne 1 ]]; then
-      die "缺少必须配置：$key"
+      fail_step "缺少必须配置：$key"
     fi
+    set_env_value "$env_file" "$key" "$new_value"
     return
   fi
 
@@ -296,16 +453,186 @@ prompt_value() {
   fi
 
   if [[ -z "$new_value" && "$allow_empty" -ne 1 ]]; then
-    die "配置 $key 不能为空。"
+    fail_step "配置 $key 不能为空。"
   fi
 
   set_env_value "$env_file" "$key" "$new_value"
 }
 
+prompt_secret_value() {
+  local prompt="$1"
+  local value=""
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    fail_step "非交互模式下缺少安全输入值：$prompt"
+  fi
+
+  read -r -s -p "$prompt: " value
+  printf '\n' >&2
+  [[ -n "$value" ]] || fail_step "输入不能为空。"
+  printf '%s' "$value"
+}
+
+hash_password_for_env() {
+  local secret_value="$1"
+  PASSWORD_INPUT="$secret_value" python3 <<'PYTHON_HASH_PASSWORD'
+import base64
+import hashlib
+import os
+import secrets
+password = os.environ['PASSWORD_INPUT'].encode('utf-8')
+salt = secrets.token_bytes(16)
+digest = hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1)
+print(base64.b64encode(salt).decode('ascii'))
+print(base64.b64encode(digest).decode('ascii'))
+PYTHON_HASH_PASSWORD
+}
+
+configure_local_auth() {
+  local env_file="$1"
+  local username current_username password password_confirm hash_output salt hash password_hash password_salt
+
+  current_username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+  prompt_value "$env_file" "LOCAL_ADMIN_USERNAME" "请输入后台登录用户名" "$current_username"
+  username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    password_hash="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_HASH")"
+    password_salt="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_SALT")"
+    [[ -n "$password_hash" && -n "$password_salt" ]] || fail_step "AUTH_MODE=local 时，非交互模式必须预先提供 LOCAL_ADMIN_PASSWORD_HASH 和 LOCAL_ADMIN_PASSWORD_SALT。"
+  else
+    while true; do
+      secret_input="$(prompt_secret_value '请输入后台登录密码（至少 8 位，不会回显）')"
+      printf -v password '%s' "$secret_input"
+      if [[ "${#password}" -lt 8 ]]; then
+        warn "密码长度不能少于 8 位，请重新输入。"
+        continue
+      fi
+      password_confirm="$(prompt_secret_value '请再次输入后台登录密码确认')"
+      if [[ "$password" != "$password_confirm" ]]; then
+        warn "两次输入的密码不一致，请重新输入。"
+        continue
+      fi
+      break
+    done
+
+    hash_output="$(hash_password_for_env "$password")"
+    salt="$(printf '%s\n' "$hash_output" | sed -n '1p')"
+    hash="$(printf '%s\n' "$hash_output" | sed -n '2p')"
+    set_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_SALT" "$salt"
+    set_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_HASH" "$hash"
+  fi
+
+  set_env_value "$env_file" "AUTH_MODE" "local"
+  set_env_value "$env_file" "GITHUB_CLIENT_ID" ""
+  set_env_value "$env_file" "GITHUB_CLIENT_SECRET" ""
+  set_env_value "$env_file" "OAUTH_ALLOWLIST" ""
+  set_env_value "$env_file" "ALLOW_FIRST_LOGIN" "false"
+  log "已写入本地管理员用户名：$username"
+}
+
+configure_github_auth() {
+  local env_file="$1"
+  local app_url callback_url client_id client_secret allowlist allow_first_login
+
+  app_url="$(read_env_value "$env_file" "APP_URL")"
+  callback_url="${app_url%/}/auth/github/callback"
+
+  cat <<GITHUB_OAUTH_HELP
+
+【GitHub OAuth 登录配置】
+你需要先在 GitHub 创建一个 OAuth App。
+如果你还没有创建，请打开 GitHub Developer Settings → OAuth Apps → New OAuth App。
+
+Homepage URL：
+$app_url
+
+Authorization callback URL：
+$callback_url
+
+接下来会要求你填写：
+- GitHub Client ID：OAuth App 的公开客户端标识
+- GitHub Client Secret：OAuth App 的私密密钥，输入时不会回显
+- 允许登录后台的 GitHub 用户：这里填写 GitHub 用户 ID，不是用户名
+  获取方式示例：在浏览器打开 https://api.github.com/users/你的GitHub用户名 ，找到返回 JSON 中的 id 字段
+  多个用户示例：github:123456,github:789012
+GITHUB_OAUTH_HELP
+
+  client_id="$(read_env_value "$env_file" "GITHUB_CLIENT_ID")"
+  prompt_value "$env_file" "GITHUB_CLIENT_ID" "GitHub Client ID（用途：OAuth App 的公开客户端标识）" "$client_id"
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    client_secret="$(read_env_value "$env_file" "GITHUB_CLIENT_SECRET")"
+    [[ -n "$client_secret" ]] || fail_step "AUTH_MODE=github 时，非交互模式必须预先提供 GITHUB_CLIENT_SECRET。"
+  else
+    client_secret="$(prompt_secret_value 'GitHub Client Secret（用途：OAuth App 的私密密钥，不会回显）')"
+    set_env_value "$env_file" "GITHUB_CLIENT_SECRET" "$client_secret"
+  fi
+
+  allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
+  prompt_value "$env_file" "OAUTH_ALLOWLIST" "允许登录后台的 GitHub 用户 ID（示例 github:123456,github:789012）" "$allowlist"
+
+  allow_first_login="$(read_env_value "$env_file" "ALLOW_FIRST_LOGIN")"
+  if [[ -z "$allow_first_login" ]]; then
+    set_env_value "$env_file" "ALLOW_FIRST_LOGIN" "false"
+  fi
+
+  set_env_value "$env_file" "AUTH_MODE" "github"
+  set_env_value "$env_file" "LOCAL_ADMIN_USERNAME" ""
+  set_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_HASH" ""
+  set_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_SALT" ""
+
+  log "GitHub OAuth 回调地址：$callback_url"
+}
+
+choose_auth_mode() {
+  local env_file="$1"
+  local auth_mode
+  auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    case "$auth_mode" in
+      local)
+        configure_local_auth "$env_file"
+        return
+        ;;
+      github)
+        configure_github_auth "$env_file"
+        return
+        ;;
+      *)
+        fail_step "非交互模式必须在 .env 中提供 AUTH_MODE，且只能是 local 或 github。"
+        ;;
+    esac
+  fi
+
+  while true; do
+    cat <<'AUTH_MODE_MENU'
+
+请选择后台登录方式：
+  [1] 用户名 + 密码登录
+  [2] GitHub OAuth 登录
+AUTH_MODE_MENU
+    read -r -p '请输入 1 或 2: ' auth_mode
+    case "$auth_mode" in
+      1)
+        configure_local_auth "$env_file"
+        return
+        ;;
+      2)
+        configure_github_auth "$env_file"
+        return
+        ;;
+      *)
+        warn '无效选择，请输入 1 或 2。'
+        ;;
+    esac
+  done
+}
+
 prepare_env_file() {
   local env_file="$TARGET_DIR/.env"
   local example_file="$TARGET_DIR/.env.example"
-  [[ -f "$example_file" ]] || die "缺少环境变量模板：$example_file"
+  [[ -f "$example_file" ]] || fail_step "缺少环境变量模板：$example_file"
 
   if [[ ! -f "$env_file" ]]; then
     cp "$example_file" "$env_file"
@@ -316,23 +643,23 @@ prepare_env_file() {
 
   append_missing_env_keys "$env_file" "$example_file"
 
-  local default_database_path
+  local default_database_path app_url port database_path
   if [[ "$MODE" == "docker" ]]; then
-    default_database_path="/app/data/arcade-atlas.sqlite"
+    default_database_path="./data/arcade-atlas.sqlite"
   else
     default_database_path="$TARGET_DIR/data/arcade-atlas.sqlite"
   fi
 
-  local app_url
   app_url="$(read_env_value "$env_file" "APP_URL")"
   if [[ -z "$app_url" || "$app_url" == "http://localhost:3000" ]]; then
-    [[ "$NON_INTERACTIVE" -eq 1 ]] && die "必须配置 APP_URL，不能保留默认值 http://localhost:3000。"
-    prompt_value "$env_file" "APP_URL" "请输入系统对外访问地址（例如 https://atlas.example.com 或 http://服务器IP:3000）" "${app_url:-http://localhost:3000}"
+    if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+      fail_step "必须配置 APP_URL，不能保留默认值 http://localhost:3000。"
+    fi
+    prompt_value "$env_file" "APP_URL" "请输入系统最终访问地址（例如 https://atlas.example.com 或 http://服务器IP:3000）" "${app_url:-http://localhost:3000}"
     app_url="$(read_env_value "$env_file" "APP_URL")"
   fi
   validate_http_url "$app_url"
 
-  local port
   port="$(read_env_value "$env_file" "PORT")"
   if [[ -z "$port" ]]; then
     set_env_value "$env_file" "PORT" "3000"
@@ -340,42 +667,13 @@ prepare_env_file() {
   fi
   validate_port_value "$port"
 
-  local database_path
   database_path="$(read_env_value "$env_file" "DATABASE_PATH")"
-  if [[ -z "$database_path" || "$database_path" == "/home/runner/work/arcade-atlas/arcade-atlas/data/arcade-atlas.sqlite" ]]; then
+  if [[ -z "$database_path" || "$database_path" == "./data/arcade-atlas.sqlite" ]]; then
     set_env_value "$env_file" "DATABASE_PATH" "$default_database_path"
   fi
 
-  local client_id
-  client_id="$(read_env_value "$env_file" "GITHUB_CLIENT_ID")"
-  if [[ -z "$client_id" || "$client_id" == "your-github-client-id" ]]; then
-    [[ "$NON_INTERACTIVE" -eq 1 ]] && die "必须配置 GITHUB_CLIENT_ID。"
-    prompt_value "$env_file" "GITHUB_CLIENT_ID" "请输入 GitHub OAuth Client ID" ""
-  fi
-
-  local client_secret
-  client_secret="$(read_env_value "$env_file" "GITHUB_CLIENT_SECRET")"
-  if [[ -z "$client_secret" || "$client_secret" == "your-github-client-secret" ]]; then
-    [[ "$NON_INTERACTIVE" -eq 1 ]] && die "必须配置 GITHUB_CLIENT_SECRET。"
-    prompt_value "$env_file" "GITHUB_CLIENT_SECRET" "请输入 GitHub OAuth Client Secret" ""
-  fi
-
-  local oauth_allowlist
-  oauth_allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
-  if [[ -z "$oauth_allowlist" || "$oauth_allowlist" == "github:123456,github:789012" ]]; then
-    [[ "$NON_INTERACTIVE" -eq 1 ]] && die "必须配置 OAUTH_ALLOWLIST。"
-    prompt_value "$env_file" "OAUTH_ALLOWLIST" "请输入允许登录后台的 GitHub 用户 ID 列表（示例 github:123456,github:789012）" ""
-  fi
-
-  local allow_first_login
-  allow_first_login="$(read_env_value "$env_file" "ALLOW_FIRST_LOGIN")"
-  if [[ -z "$allow_first_login" ]]; then
-    set_env_value "$env_file" "ALLOW_FIRST_LOGIN" "false"
-  fi
-
-  if [[ "$MODE" == "node" ]]; then
-    mkdir -p "$TARGET_DIR/data"
-  fi
+  choose_auth_mode "$env_file"
+  mkdir -p "$TARGET_DIR/data"
 }
 
 port_in_use() {
@@ -396,20 +694,19 @@ port_in_use() {
 
 check_port() {
   local env_file="$TARGET_DIR/.env"
-  local port
+  local port new_port
   port="$(read_env_value "$env_file" "PORT")"
-  [[ -n "$port" ]] || die "无法读取 PORT 配置。"
+  [[ -n "$port" ]] || fail_step "无法读取 PORT 配置。"
   validate_port_value "$port"
 
   if port_in_use "$port"; then
     warn "端口 $port 已被占用。"
     if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
-      die "端口冲突，请先释放端口或修改 .env 中的 PORT。"
+      fail_step "端口冲突，请先释放端口或修改 .env 中的 PORT。" "建议执行：ss -ltnp | grep :$port"
     fi
 
-    local new_port
-    read -r -p "请输入新的监听端口，或直接回车取消部署: " new_port
-    [[ -n "$new_port" ]] || die "用户取消部署。"
+    read -r -p '请输入新的监听端口，或直接回车取消部署: ' new_port
+    [[ -n "$new_port" ]] || fail_step "用户取消部署。"
     validate_port_value "$new_port"
     set_env_value "$env_file" "PORT" "$new_port"
     log "已将 PORT 更新为 $new_port"
@@ -426,36 +723,102 @@ install_node_runtime() {
 
   if [[ -n "$node_major" && "$node_major" -ge 22 ]]; then
     log "Node.js 版本满足要求：$(node -v)"
-  else
-    warn "当前 Node.js 不存在或版本低于 22。"
-    confirm "将安装 Node.js 22 LTS，这可能更新系统中的 node/npm，是否继续？" || die "用户取消安装 Node.js。"
-    ensure_sudo
-    curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
-    $SUDO apt-get install -y nodejs
+    return
   fi
 
+  warn '当前 Node.js 不存在或版本低于 22。'
+  confirm '将安装 Node.js 22 LTS，这可能更新系统中的 node/npm，是否继续？' || fail_step '用户取消安装 Node.js。'
+  ensure_sudo
+  if ! curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -; then
+    fail_step 'Node.js 安装脚本执行失败。' '请检查网络后重试，或手动安装 Node.js 22 LTS。'
+  fi
+  if ! $SUDO apt-get install -y nodejs; then
+    fail_step 'Node.js 安装失败。' '建议执行：sudo apt-get install -y nodejs'
+  fi
   require_command node
   require_command npm
 }
 
-install_docker_runtime() {
-  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    log "Docker 与 Docker Compose 已满足要求。"
-  else
-    warn "未检测到可用的 Docker / Docker Compose。"
-    confirm "将通过 apt 自动安装 docker.io 和 docker-compose-plugin，是否继续？" || die "用户取消安装 Docker。"
-    ensure_sudo
-    $SUDO apt-get update
-    $SUDO apt-get install -y docker.io docker-compose-plugin
-    $SUDO systemctl enable --now docker
-  fi
-
+set_docker_command() {
   if docker info >/dev/null 2>&1; then
     DOCKER_BIN=(docker)
   else
     ensure_sudo
-    DOCKER_BIN=($SUDO docker)
+    DOCKER_BIN=("$SUDO" "docker")
+    if ! "${DOCKER_BIN[@]}" info >/dev/null 2>&1; then
+      fail_step 'Docker 已安装，但当前用户仍无法访问 Docker 守护进程。' '请执行：sudo systemctl status docker' '如需当前用户直接使用 Docker，可将用户加入 docker 组后重新登录。'
+    fi
   fi
+}
+
+ensure_docker_repository() {
+  local repo_base="https://download.docker.com/linux/${OS_ID}"
+  local release_url="${repo_base}/dists/${VERSION_CODENAME}/Release"
+  local keyring_dir='/etc/apt/keyrings'
+  local keyring_path="${keyring_dir}/docker.asc"
+  local repo_line
+
+  log "检查 Docker 官方仓库是否支持当前系统代号：$VERSION_CODENAME"
+  if ! curl -fsSLI "$release_url" >/dev/null 2>&1; then
+    fail_step 'Docker 官方仓库暂不支持当前系统版本。' \
+      "系统：$OS_PRETTY_NAME" \
+      "仓库地址：$release_url" \
+      '请先确认 https://download.docker.com/linux/ 下是否已发布当前版本，或改用受支持的 Debian / Ubuntu 版本。'
+  fi
+
+  ensure_sudo
+  $SUDO install -m 0755 -d "$keyring_dir"
+  if ! curl -fsSL "${repo_base}/gpg" | $SUDO tee "$keyring_path" >/dev/null; then
+    fail_step '写入 Docker GPG key 失败。' "请检查网络后重试：${repo_base}/gpg"
+  fi
+  $SUDO chmod a+r "$keyring_path"
+
+  repo_line="deb [arch=$(dpkg --print-architecture) signed-by=$keyring_path] $repo_base $VERSION_CODENAME stable"
+  if [[ -f /etc/apt/sources.list.d/docker.list ]] && grep -Fq "$repo_line" /etc/apt/sources.list.d/docker.list; then
+    log 'Docker 官方 APT 源已存在。'
+  else
+    printf '%s\n' "$repo_line" | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
+    log '已写入 Docker 官方 APT 源。'
+  fi
+
+  if ! $SUDO apt-get update; then
+    fail_step 'Docker 官方仓库 apt update 失败。' '请检查 APT 源配置、代理和网络连通性。' '建议执行：sudo apt-get update'
+  fi
+}
+
+install_docker_runtime() {
+  if command -v docker-compose >/dev/null 2>&1; then
+    warn '检测到旧版 docker-compose 命令。脚本将优先安装并使用 docker compose plugin。'
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    log "Docker Compose Plugin 已可用：$(docker compose version | head -n 1)"
+    set_docker_command
+    return
+  fi
+
+  warn '当前未检测到可用的 Docker Compose Plugin。'
+  confirm '将安装或修复 Docker Engine 与 Docker Compose Plugin，是否继续？' || fail_step '用户取消安装 Docker。'
+  install_apt_packages ca-certificates curl gnupg
+  ensure_docker_repository
+
+  if ! $SUDO apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    fail_step 'Docker 组件安装失败。' \
+      '请执行：sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin' \
+      '如果提示找不到软件包，请检查 Docker 官方 APT 源是否已正确写入。'
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if ! $SUDO systemctl enable --now docker; then
+      fail_step 'Docker 服务启动失败。' '请执行：sudo systemctl status docker' '或：sudo journalctl -u docker -n 100 --no-pager'
+    fi
+  fi
+
+  if ! docker compose version >/dev/null 2>&1; then
+    fail_step 'Docker Compose Plugin 安装后仍不可用。' '请执行：docker compose version' '并检查 /usr/libexec/docker/cli-plugins 或 /usr/lib/docker/cli-plugins 是否存在 compose 插件。'
+  fi
+
+  set_docker_command
 }
 
 show_environment_summary() {
@@ -463,6 +826,8 @@ show_environment_summary() {
   log "项目目录：$TARGET_DIR"
   log "仓库地址：$REPO_URL"
   log "当前用户：$(id -un)"
+  log "系统：$OS_PRETTY_NAME"
+  log "系统代号：$VERSION_CODENAME"
   if command -v docker >/dev/null 2>&1; then
     log "Docker：$(docker --version 2>/dev/null || true)"
   fi
@@ -478,12 +843,20 @@ run_docker_deploy() {
   local env_file="$TARGET_DIR/.env"
   local port
   port="$(read_env_value "$env_file" "PORT")"
+  validate_auth_configuration_before_start "$env_file"
 
-  confirm "将通过 docker compose 构建并启动服务，这可能重建现有容器，是否继续？" || die "用户取消启动 Docker 服务。"
+  confirm '将通过 docker compose 构建并启动服务，这可能重建现有容器，是否继续？' || fail_step '用户取消启动 Docker 服务。'
 
   (
     cd "$TARGET_DIR"
-    "${DOCKER_BIN[@]}" compose up -d --build
+    if ! "${DOCKER_BIN[@]}" compose config >/dev/null; then
+      fail_step 'docker compose config 检查失败。' "请执行：cd $TARGET_DIR && docker compose config"
+    fi
+    if ! "${DOCKER_BIN[@]}" compose up -d --build; then
+      fail_step 'Docker Compose 启动失败。' \
+        "请执行：cd $TARGET_DIR && docker compose ps" \
+        "请执行：cd $TARGET_DIR && docker compose logs --tail=200"
+    fi
   )
 
   run_health_check "$port"
@@ -491,9 +864,9 @@ run_docker_deploy() {
 
 run_node_deploy() {
   local env_file="$TARGET_DIR/.env"
-  local port
+  local port pid_file
   port="$(read_env_value "$env_file" "PORT")"
-  local pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
+  pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
   mkdir -p "$TARGET_DIR/.deploy"
 
   (
@@ -502,12 +875,11 @@ run_node_deploy() {
     npm run build
   )
 
-  if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" >/dev/null 2>&1; then
-    confirm "检测到旧的 Node 进程仍在运行，将重启该进程，是否继续？" || die "用户取消重启 Node 服务。"
-    kill "$(cat "$pid_file")"
+  if [[ -f "$pid_file" ]]; then
+    fail_step '检测到已有 Node 进程 PID 文件。' "请确认旧进程已停止，然后删除：$pid_file"
   fi
 
-  confirm "将以 nohup 方式启动 Node 服务，这会占用端口 $port，是否继续？" || die "用户取消启动 Node 服务。"
+  confirm "将以 nohup 方式启动 Node 服务，这会占用端口 $port，是否继续？" || fail_step '用户取消启动 Node 服务。'
   (
     cd "$TARGET_DIR"
     nohup npm run start >"$TARGET_DIR/.deploy/app.log" 2>&1 &
@@ -519,10 +891,8 @@ run_node_deploy() {
 
 run_health_check() {
   local port="$1"
-  local url="http://127.0.0.1:${port}/"
-  local attempt
-
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  local url="http://127.0.0.1:${port}/health"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     if curl -fsS -o /dev/null "$url"; then
       log "健康检查通过：$url"
       return
@@ -530,34 +900,79 @@ run_health_check() {
     sleep 2
   done
 
-  die "健康检查失败，请检查服务日志和 .env 配置：$url"
+  fail_step '健康检查失败。' \
+    "失败地址：$url" \
+    "如果是 Docker 部署，请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200" \
+    "如果是 Node 部署，请检查：$TARGET_DIR/.deploy/app.log"
+}
+
+show_final_summary() {
+  local env_file="$TARGET_DIR/.env"
+  local app_url auth_mode login_url callback_url username allowlist
+  app_url="$(read_env_value "$env_file" "APP_URL")"
+  auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
+  login_url="${app_url%/}/login"
+
+  step '部署完成摘要'
+  log "访问地址：$app_url"
+  log "后台登录地址：$login_url"
+
+  case "$auth_mode" in
+    local)
+      username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+      log '后台登录方式：用户名 + 密码'
+      log "后台用户名：$username"
+      log '密码不会再次显示；如需修改，请重新运行部署脚本生成新的密码哈希。'
+      ;;
+    github)
+      callback_url="${app_url%/}/auth/github/callback"
+      allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
+      log '后台登录方式：GitHub OAuth'
+      log "Homepage URL：$app_url"
+      log "Authorization callback URL：$callback_url"
+      log 'GitHub OAuth App 中需要填写：'
+      log "  - Homepage URL: $app_url"
+      log "  - Authorization callback URL: $callback_url"
+      log '  - GitHub Client ID: 你在 GitHub OAuth App 中看到的公开客户端标识'
+      log '  - GitHub Client Secret: 你在 GitHub OAuth App 中生成的私密密钥'
+      log "允许登录的 GitHub 用户：$allowlist"
+      ;;
+  esac
+
+  log "更多部署说明见：$TARGET_DIR/DEPLOYMENT.md"
 }
 
 main() {
   parse_args "$@"
+  step '检查系统环境'
   detect_os
   ensure_base_commands
+
+  step '准备项目代码'
   clone_or_update_repo
   show_environment_summary
 
   if [[ "$MODE" == "docker" ]]; then
+    step '检查 / 安装 Docker 与 Docker Compose Plugin'
     install_docker_runtime
   else
+    step '检查 / 安装 Node.js 运行环境'
     install_node_runtime
   fi
 
+  step '生成并检查 .env 配置'
   prepare_env_file
   check_port
 
   if [[ "$MODE" == "docker" ]]; then
+    step '启动 Docker Compose 服务'
     run_docker_deploy
   else
+    step '启动 Node 服务'
     run_node_deploy
   fi
 
-  log "部署完成。"
-  log "请确认以下用户自定义配置已填写正确：APP_URL、GITHUB_CLIENT_ID、GITHUB_CLIENT_SECRET、OAUTH_ALLOWLIST"
-  log "更多部署说明见：$TARGET_DIR/DEPLOYMENT.md"
+  show_final_summary
 }
 
 main "$@"

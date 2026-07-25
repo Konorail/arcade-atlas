@@ -1,14 +1,41 @@
 <%- include('partials/header', { title: '后台登录' }) %>
 <section class="panel stack narrow">
-  <h1>后台 OAuth 登录</h1>
-  <p>仅允许系统配置的 OAuth 账号访问后台。</p>
-  <% if (providers.length === 0) { %>
-    <p class="error">未配置任何 OAuth Provider，请先设置环境变量。</p>
+  <h1>后台登录</h1>
+  <p class="muted">当前认证方式：<code><%= authMode %></code></p>
+
+  <% if (errorMessage) { %>
+    <p class="error"><%= errorMessage %></p>
   <% } %>
-  <div class="stack">
-    <% providers.forEach((provider) => { %>
-      <a class="button" href="/auth/<%= provider.name %>/redirect">使用 <%= provider.displayName %> 登录</a>
-    <% }) %>
-  </div>
+
+  <% if (!localLoginEnabled && providers.length === 0) { %>
+    <p class="error">当前没有可用的后台登录方式，请先检查认证配置。</p>
+  <% } %>
+
+  <% if (localLoginEnabled) { %>
+    <form class="stack" method="post" action="/login">
+      <label>
+        用户名
+        <input type="text" name="username" autocomplete="username" required />
+      </label>
+      <label>
+        密码
+        <input type="password" name="password" autocomplete="current-password" required />
+      </label>
+      <button class="button" type="submit">使用用户名和密码登录</button>
+    </form>
+  <% } %>
+
+  <% if (localLoginEnabled && providers.length > 0) { %>
+    <p class="muted center-text">或</p>
+  <% } %>
+
+  <% if (providers.length > 0) { %>
+    <div class="stack">
+      <p class="muted">如果你已配置 GitHub OAuth，也可以直接使用 GitHub 登录后台。</p>
+      <% providers.forEach((provider) => { %>
+        <a class="button secondary" href="/auth/<%= provider.name %>/redirect">使用 <%= provider.displayName %> 登录</a>
+      <% }) %>
+    </div>
+  <% } %>
 </section>
 <%- include('partials/footer') %>
