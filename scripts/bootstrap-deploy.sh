@@ -237,6 +237,19 @@ read_env_value() {
   awk -F= -v target="$key" '$1 == target {print substr($0, index($0, "=") + 1)}' "$env_file" | tail -n 1
 }
 
+validate_http_url() {
+  local value="$1"
+  [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || die "APP_URL 必须是合法的 http:// 或 https:// 地址。"
+}
+
+validate_port_value() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "PORT 必须是有效整数。"
+  if (( value < 1 || value > 65535 )); then
+    die "PORT 必须是 1-65535 之间的整数。"
+  fi
+}
+
 set_env_value() {
   local env_file="$1"
   local key="$2"
@@ -315,13 +328,17 @@ prepare_env_file() {
   if [[ -z "$app_url" || "$app_url" == "http://localhost:3000" ]]; then
     [[ "$NON_INTERACTIVE" -eq 1 ]] && die "必须配置 APP_URL，不能保留默认值 http://localhost:3000。"
     prompt_value "$env_file" "APP_URL" "请输入系统对外访问地址（例如 https://atlas.example.com 或 http://服务器IP:3000）" "${app_url:-http://localhost:3000}"
+    app_url="$(read_env_value "$env_file" "APP_URL")"
   fi
+  validate_http_url "$app_url"
 
   local port
   port="$(read_env_value "$env_file" "PORT")"
   if [[ -z "$port" ]]; then
     set_env_value "$env_file" "PORT" "3000"
+    port="3000"
   fi
+  validate_port_value "$port"
 
   local database_path
   database_path="$(read_env_value "$env_file" "DATABASE_PATH")"
@@ -382,6 +399,7 @@ check_port() {
   local port
   port="$(read_env_value "$env_file" "PORT")"
   [[ -n "$port" ]] || die "无法读取 PORT 配置。"
+  validate_port_value "$port"
 
   if port_in_use "$port"; then
     warn "端口 $port 已被占用。"
@@ -392,6 +410,7 @@ check_port() {
     local new_port
     read -r -p "请输入新的监听端口，或直接回车取消部署: " new_port
     [[ -n "$new_port" ]] || die "用户取消部署。"
+    validate_port_value "$new_port"
     set_env_value "$env_file" "PORT" "$new_port"
     log "已将 PORT 更新为 $new_port"
   fi

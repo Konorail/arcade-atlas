@@ -7,8 +7,9 @@ services:
     env_file:
       - .env
     environment:
+      PORT: ${PORT:-3000}
       DATABASE_PATH: /app/data/arcade-atlas.sqlite
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     volumes:
       - ./data:/app/data

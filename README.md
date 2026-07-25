@@ -59,6 +59,14 @@
   bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
   ```
 
+- 如果远程脚本拉取失败，可使用回退方式：
+
+  ```bash
+  git clone https://github.com/Konorail/arcade-atlas.git
+  cd arcade-atlas
+  bash ./scripts/bootstrap-deploy-local.sh --mode docker
+  ```
+
 - 如果你已经在项目目录中，也可以直接运行：
 
   ```bash
