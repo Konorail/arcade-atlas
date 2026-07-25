@@ -1,4 +1,5 @@
 import express, { NextFunction, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { config } from './config';
 import { closeDatabase } from './db';
@@ -50,57 +51,30 @@ const app = express();
 const viewsDir = path.join(process.cwd(), 'views');
 const publicDir = path.join(process.cwd(), 'public');
 const SHUTDOWN_TIMEOUT_MS = 10_000;
-const AUTH_RATE_LIMIT_WINDOW_MS = 60_000;
-const AUTH_RATE_LIMIT_MAX_REQUESTS = 30;
-const authRateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const authEntryRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: '请求过于频繁，请稍后再试。',
+});
+const adminRouteRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: '后台请求过于频繁，请稍后再试。',
+});
 
 app.set('view engine', 'ejs');
 app.set('views', viewsDir);
 app.use(express.static(publicDir));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-
-function getClientAddress(request: Request): string {
-  const forwardedFor = request.headers['x-forwarded-for'];
-  const fallbackIp = request.ip || 'unknown';
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0]?.trim() || fallbackIp;
-  }
-
-  return fallbackIp;
-}
-
-function authRateLimit(request: Request, response: Response, next: NextFunction): void {
-  const now = Date.now();
-  const key = `${getClientAddress(request)}:${request.method}:${request.path}`;
-  const entry = authRateLimitStore.get(key);
-
-  if (!entry || entry.resetAt <= now) {
-    authRateLimitStore.set(key, { count: 1, resetAt: now + AUTH_RATE_LIMIT_WINDOW_MS });
-    next();
-    return;
-  }
-
-  if (entry.count >= AUTH_RATE_LIMIT_MAX_REQUESTS) {
-    response.setHeader('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
-    if (wantsJson(request)) {
-      response.status(429).json({ error: 'Too many requests. Please try again later.' });
-      return;
-    }
-
-    response.status(429).render('error', { message: '请求过于频繁，请稍后再试。' });
-    return;
-  }
-
-  entry.count += 1;
-  authRateLimitStore.set(key, entry);
-  next();
-}
-
-app.use('/login', authRateLimit);
-app.use('/auth', authRateLimit);
-app.use('/admin', authRateLimit);
-app.use('/api/admin', authRateLimit);
+app.use('/login', authEntryRateLimit);
+app.use('/auth', authEntryRateLimit);
+app.use('/admin', adminRouteRateLimit);
+app.use('/api/admin', adminRouteRateLimit);
 
 function buildLoginViewData(overrides: { errorMessage?: string } = {}) {
   return {

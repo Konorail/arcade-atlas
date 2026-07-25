@@ -25,6 +25,7 @@
     "better-sqlite3": "^13.0.1",
     "ejs": "^3.1.10",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.6.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
