@@ -11,7 +11,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: ${PORT:-3000}
-      DATABASE_PATH: /app/data/arcade-atlas.sqlite
+      DATABASE_PATH: ${DATABASE_PATH:-./data/arcade-atlas.sqlite}
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     volumes:

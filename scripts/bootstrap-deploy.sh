@@ -516,7 +516,7 @@ prepare_env_file() {
 
   local default_database_path app_url port database_path
   if [[ "$MODE" == "docker" ]]; then
-    default_database_path="/app/data/arcade-atlas.sqlite"
+    default_database_path="./data/arcade-atlas.sqlite"
   else
     default_database_path="$TARGET_DIR/data/arcade-atlas.sqlite"
   fi

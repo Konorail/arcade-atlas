@@ -92,6 +92,7 @@ ALLOW_FIRST_LOGIN=false
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，例如：`github:123456,github:789012`
 - `ALLOW_FIRST_LOGIN`：只影响 GitHub OAuth 首次登录自动建号逻辑
+- Docker 部署推荐保持 `DATABASE_PATH=./data/arcade-atlas.sqlite`；容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
 
 `.env` 已被 `.gitignore` 忽略；`.env.example` 仅保留占位符，不包含真实密钥。
 
@@ -190,7 +191,13 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 ./data -> /app/data
 ```
 
-容器内数据库路径固定为：
+默认情况下，`.env` 中的：
+
+```text
+DATABASE_PATH=./data/arcade-atlas.sqlite
+```
+
+会在容器内解析为：
 
 ```text
 /app/data/arcade-atlas.sqlite
