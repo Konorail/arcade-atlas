@@ -84,8 +84,8 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 3. 检查 / 安装 Docker Compose Plugin
 4. 要求你选择后台认证方式
 5. 生成 `.env`
-6. 启动 Docker Compose
-7. 启动前检查认证配置是否完整
+6. 启动前检查认证配置是否完整
+7. 启动 Docker Compose
 8. 执行健康检查
 9. 输出最终访问地址与登录方式
 
