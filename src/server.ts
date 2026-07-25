@@ -1,12 +1,13 @@
 import express, { NextFunction, Request, Response } from 'express';
 import path from 'node:path';
 import { config } from './config';
-import './db';
+import { closeDatabase } from './db';
 import {
-  completeOAuthLogin,
-  createAuthorizationUrl,
+  authenticateLocalUser,
   buildOAuthState,
   clearOAuthState,
+  completeOAuthLogin,
+  createAuthorizationUrl,
   endAdminSession,
   exchangeCodeForProfile,
   getCurrentUser,
@@ -20,21 +21,30 @@ import {
   createMaintenanceLog,
   createQrCodeBuffer,
   createRepairForMachineToken,
+  ensureBootstrapAuthConfig,
+  getAuthSettingsView,
+  getEnabledProviders,
+  getEffectiveAuthMode,
   getMachine,
   getMachineHistory,
   getMachineType,
   getMachineViewByToken,
   getRepair,
   getStatusOptions,
+  isLocalLoginEnabled,
   listMachineTypes,
   listMachines,
   listMaintenanceLogsForRepair,
   listRepairs,
+  saveGithubOAuthSettings,
+  setEffectiveAuthMode,
   regenerateMachineQrToken,
   updateMachine,
   updateMachineType,
   updateRepairStatus,
 } from './services';
+
+ensureBootstrapAuthConfig();
 
 const app = express();
 const viewsDir = path.join(process.cwd(), 'views');
@@ -46,10 +56,21 @@ app.use(express.static(publicDir));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+function buildLoginViewData(overrides: { errorMessage?: string } = {}) {
+  return {
+    authMode: getEffectiveAuthMode(),
+    localLoginEnabled: isLocalLoginEnabled(),
+    providers: getEnabledProviders(),
+    errorMessage: overrides.errorMessage,
+  };
+}
+
 app.use((request, response, next) => {
   response.locals.appName = config.appName;
   response.locals.currentUser = getCurrentUser(request);
-  response.locals.providers = config.enabledProviders;
+  response.locals.providers = getEnabledProviders();
+  response.locals.localLoginEnabled = isLocalLoginEnabled();
+  response.locals.authMode = getEffectiveAuthMode();
   response.locals.statuses = getStatusOptions();
   next();
 });
@@ -106,12 +127,32 @@ function respondError(request: Request, response: Response, error: unknown, stat
   response.status(statusCode).render('error', { message });
 }
 
+app.get('/health', (_request, response) => {
+  response.json({ status: 'ok', app: config.appName });
+});
+
 app.get('/', (_request, response) => {
   response.render('home');
 });
 
 app.get('/login', (_request, response) => {
-  response.render('login');
+  response.render('login', buildLoginViewData());
+});
+
+app.post('/login', (request, response) => {
+  if (!isLocalLoginEnabled()) {
+    response.status(400).render('login', buildLoginViewData({ errorMessage: '当前部署未启用用户名和密码登录。' }));
+    return;
+  }
+
+  try {
+    const user = authenticateLocalUser(String(request.body.username || ''), String(request.body.password || ''));
+    startAdminSession(response, user.id);
+    response.redirect('/admin');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '登录失败。';
+    response.status(401).render('login', buildLoginViewData({ errorMessage: message }));
+  }
 });
 
 app.get('/logout', (request, response) => {
@@ -174,7 +215,55 @@ app.get('/admin', requireAdmin, (_request, response) => {
     machineTypes: listMachineTypes().length,
     machines: listMachines().length,
     repairs: listRepairs().length,
+    authMode: getEffectiveAuthMode(),
   });
+});
+
+app.get('/admin/auth-settings', requireAdmin, (_request, response) => {
+  response.render('auth-settings', {
+    settings: getAuthSettingsView(),
+    errorMessage: null,
+    successMessage: null,
+  });
+});
+
+app.post('/admin/auth-settings', requireAdmin, (request, response) => {
+  const authMode = String(request.body.auth_mode || '').trim();
+  const githubClientId = String(request.body.github_client_id || '').trim();
+  const githubClientSecret = String(request.body.github_client_secret || '');
+  const oauthAllowlist = String(request.body.oauth_allowlist || '').trim();
+
+  if (authMode !== 'local' && authMode !== 'github' && authMode !== 'both') {
+    response.status(400).render('auth-settings', {
+      settings: getAuthSettingsView(),
+      errorMessage: '认证方式必须是 local、github 或 both。',
+      successMessage: null,
+    });
+    return;
+  }
+
+  try {
+    if (githubClientId || githubClientSecret || oauthAllowlist || authMode !== 'local') {
+      saveGithubOAuthSettings({
+        clientId: githubClientId || getAuthSettingsView().github.clientId,
+        clientSecret: githubClientSecret,
+        allowlistRaw: oauthAllowlist,
+      });
+    }
+
+    setEffectiveAuthMode(authMode);
+    response.render('auth-settings', {
+      settings: getAuthSettingsView(),
+      errorMessage: null,
+      successMessage: '认证配置已保存。',
+    });
+  } catch (error) {
+    response.status(400).render('auth-settings', {
+      settings: getAuthSettingsView(),
+      errorMessage: error instanceof Error ? error.message : '保存认证配置失败。',
+      successMessage: null,
+    });
+  }
 });
 
 app.get('/admin/machine-types', requireAdmin, (_request, response) => {
@@ -458,6 +547,28 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   respondError(request, response, error, statusCode);
 });
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`${config.appName} is running at ${config.appUrl}`);
 });
+
+let shuttingDown = false;
+
+function shutdown(signal: string): void {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  console.log(`Received ${signal}, shutting down...`);
+  server.close(() => {
+    closeDatabase();
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

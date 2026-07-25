@@ -1,10 +1,14 @@
 # Arcade Atlas
 
-轻量级机台管理与维修记录系统，围绕**机台类型 → 具体机台 → 二维码 → 报修记录 → 维修日志**建立完整维修历史。
+轻量级机台管理与维修记录系统，围绕 **机台类型 → 具体机台 → 二维码 → 报修记录 → 维修日志** 建立完整维修历史。
 
 ## 功能范围
 
-- 后台通过 OAuth 登录管理机台类型、具体机台、报修记录与维修日志
+- 后台支持两种登录方式：
+  - 用户名 + 密码
+  - GitHub OAuth
+- 安装脚本会明确要求你二选一完成首次部署
+- 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
 - 访客扫码进入机台详情页后，无需登录即可查看最近记录并提交报修
 - 后台支持报修状态流转、维修日志追加、机台历史追踪
@@ -25,16 +29,31 @@
    cp .env.example .env
    ```
 
-2. 填写 GitHub OAuth 应用配置，并确保回调地址为：
+2. 选择后台登录方式：
 
-   ```text
-   http://localhost:3000/auth/github/callback
-   ```
+   - **用户名 + 密码**
+     - 设置 `AUTH_MODE=local`
+     - 填写 `LOCAL_ADMIN_USERNAME`
+     - 将密码哈希和盐写入：
+       - `LOCAL_ADMIN_PASSWORD_HASH`
+       - `LOCAL_ADMIN_PASSWORD_SALT`
+     - 推荐直接运行部署脚本生成，不要手动写明文密码
+
+   - **GitHub OAuth**
+     - 设置 `AUTH_MODE=github`
+     - 填写 `GITHUB_CLIENT_ID`
+     - 填写 `GITHUB_CLIENT_SECRET`
+     - 填写 `OAUTH_ALLOWLIST`
+     - GitHub OAuth 回调地址固定为：
+
+       ```text
+       APP_URL/auth/github/callback
+       ```
 
 3. 安装依赖并启动：
 
    ```bash
-   npm install
+   npm ci
    npm run dev
    ```
 
@@ -42,59 +61,84 @@
 
    - 首页：`http://localhost:3000/`
    - 后台登录：`http://localhost:3000/login`
-
-## 部署说明
-
-- 详细部署文档见 [DEPLOYMENT.md](./DEPLOYMENT.md)
-- 文档同时提供：
-  - Debian / Ubuntu 手动部署
-  - Docker Compose 一键部署
+   - 健康检查：`http://localhost:3000/health`
 
 ## 一键部署脚本
 
-- 推荐先阅读 [DEPLOYMENT.md](./DEPLOYMENT.md) 中的完整说明
-- 远程一键拉取并部署：
+推荐使用仓库提供的部署脚本：
 
-  ```bash
-  bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
-  ```
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
+```
 
-- 如果远程脚本拉取失败，可使用回退方式：
+如果已经在仓库目录中：
 
-  ```bash
-  git clone https://github.com/Konorail/arcade-atlas.git
-  cd arcade-atlas
-  bash ./scripts/bootstrap-deploy-local.sh --mode docker
-  ```
+```bash
+bash ./scripts/bootstrap-deploy-local.sh --mode docker
+```
 
-- 如果你已经在项目目录中，也可以直接运行：
+脚本会按以下顺序执行：
 
-  ```bash
-  bash ./scripts/bootstrap-deploy-local.sh --mode docker
-  ```
+1. 检查系统环境
+2. 检查 / 安装 Docker
+3. 检查 / 安装 Docker Compose Plugin
+4. 要求你选择后台认证方式
+5. 生成 `.env`
+6. 启动 Docker Compose
+7. 执行健康检查
+8. 输出最终访问地址与登录方式
 
-- 脚本会自动完成以下事项：
-  - 检查 Debian / Ubuntu 系统版本
-  - 检查并安装 Git、curl、Docker / Docker Compose 或 Node.js 所需依赖
-  - 检查当前用户权限、端口占用、项目目录与 Git 状态
-  - 保留已有 `.env`，仅补齐缺失项，不覆盖已有数据库
-  - 提示你填写必须手动提供的配置，例如 `APP_URL`、`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`OAUTH_ALLOWLIST`
-  - 自动执行构建、启动和健康检查
+### Docker Compose Plugin 安装说明
+
+脚本会先检查：
+
+- `docker` 是否存在
+- `docker compose version` 是否可用
+- 当前系统是否为 Debian / Ubuntu
+- `/etc/os-release` 中的 `VERSION_CODENAME`
+- Docker 官方 APT 源与 GPG Key 是否存在
+
+如果系统还没有 Compose Plugin，脚本会使用当前真实的 `VERSION_CODENAME` 动态添加 Docker 官方仓库，例如：
+
+```text
+https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
+```
+
+不会写死 `bullseye`、`bookworm` 或其他版本名。
 
 ## 关键环境变量
 
-- `APP_URL`：系统对外访问地址，用于拼接二维码访问链接
+- `APP_NAME`：站点名称
+- `APP_URL`：系统最终访问地址，用于二维码和 OAuth 回调
+- `PORT`：应用监听端口
 - `DATABASE_PATH`：SQLite 数据文件路径
+- `AUTH_MODE`：后台认证模式，支持 `local` / `github` / `both`
+- `LOCAL_ADMIN_USERNAME`：本地后台用户名
+- `LOCAL_ADMIN_PASSWORD_HASH`：本地后台密码哈希
+- `LOCAL_ADMIN_PASSWORD_SALT`：本地后台密码盐
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
-- `OAUTH_ALLOWLIST`：允许访问后台的 OAuth 用户列表，格式为 `provider:userId`
-- `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的用户首次自动创建
+- `OAUTH_ALLOWLIST`：允许访问后台的 GitHub 用户列表，格式为 `github:用户ID`
+- `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的 GitHub 用户首次自动创建
+
+## 后台认证设置
+
+部署完成后，进入后台可打开：
+
+- `GET /admin/auth-settings`
+
+你可以在这里：
+
+- 切换后台认证方式
+- 补充或修改 GitHub OAuth Client ID / Client Secret
+- 修改 GitHub 用户 ID 白名单
+- 在首次部署选择“用户名 + 密码”后，后续再启用 GitHub OAuth
 
 ## 主要路径
 
 ### 前台
 
-- `GET /machine/:token`：扫码后的机台详情页
-- `POST /machine/:token/repairs`：提交报修
+- `GET /machine/:token`
+- `POST /machine/:token/repairs`
 - `GET /api/machines/:token`
 - `GET /api/machines/:token/repairs`
 - `POST /api/machines/:token/repairs`
@@ -102,10 +146,13 @@
 
 ### 认证
 
+- `GET /login`
+- `POST /login`
+- `GET /logout`
 - `GET /auth/:provider/redirect`
 - `GET /auth/:provider/callback`
-- `GET /login`
-- `GET /logout`
+- `GET /admin/auth-settings`
+- `POST /admin/auth-settings`
 
 ### 后台
 
@@ -127,15 +174,6 @@
 - `GET /api/admin/repairs/:id/maintenance-logs`
 - `POST /api/admin/repairs/:id/maintenance-logs`
 
-## 数据说明
+## 部署说明
 
-启动时会自动初始化以下核心表：
-
-- `users`
-- `machine_types`
-- `machines`
-- `repair_records`
-- `maintenance_logs`
-- `admin_sessions`
-
-其中维修日志会同时保存 `repair_record_id` 与 `machine_id`，并由服务端保证与对应报修记录一致。
+完整部署文档见 [DEPLOYMENT.md](./DEPLOYMENT.md)。

@@ -1,7 +1,16 @@
 import crypto from 'node:crypto';
 import { Request, Response } from 'express';
-import { config, getProvider, getRedirectUri, isAllowlisted } from './config';
-import { createSession, deleteSession, findUserByProvider, getSessionUser, upsertOAuthUser } from './services';
+import { config, getAllowlistKey } from './config';
+import {
+  createSession,
+  deleteSession,
+  findLocalUserByUsername,
+  findUserByProvider,
+  getEnabledProviders,
+  getOAuthAllowlist,
+  getSessionUser,
+  upsertOAuthUser,
+} from './services';
 
 export type OAuthProfile = {
   id: string;
@@ -9,6 +18,17 @@ export type OAuthProfile = {
   email: string | null;
   avatar: string | null;
 };
+
+const scryptOptions = {
+  N: 16384,
+  r: 8,
+  p: 1,
+  maxmem: 64 * 1024 * 1024,
+};
+
+function getProvider(name: string) {
+  return getEnabledProviders().find((provider) => provider.name === name);
+}
 
 export function parseCookies(request: Request): Record<string, string> {
   const cookieHeader = request.headers.cookie;
@@ -86,6 +106,46 @@ export function clearOAuthState(response: Response): void {
   clearCookie(response, config.oauthStateCookieName);
 }
 
+export function hashPassword(password: string, salt: Buffer): Buffer {
+  return crypto.scryptSync(password, salt, 64, scryptOptions);
+}
+
+export function createPasswordHash(password: string): { salt: string; hash: string } {
+  const normalizedPassword = password.trim();
+  if (normalizedPassword.length < 8) {
+    throw new Error('Password must be at least 8 characters long.');
+  }
+
+  const salt = crypto.randomBytes(16);
+  return {
+    salt: salt.toString('base64'),
+    hash: hashPassword(normalizedPassword, salt).toString('base64'),
+  };
+}
+
+export function verifyPassword(password: string, passwordSalt: string, expectedHash: string): boolean {
+  try {
+    const actualHash = hashPassword(password, Buffer.from(passwordSalt, 'base64'));
+    const expected = Buffer.from(expectedHash, 'base64');
+    return actualHash.length === expected.length && crypto.timingSafeEqual(actualHash, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function authenticateLocalUser(username: string, password: string) {
+  const user = findLocalUserByUsername(username.trim());
+  if (!user || !user.password_hash || !user.password_salt || user.status !== 'active') {
+    throw new Error('用户名或密码错误。');
+  }
+
+  if (!verifyPassword(password, user.password_salt, user.password_hash)) {
+    throw new Error('用户名或密码错误。');
+  }
+
+  return user;
+}
+
 export function createAuthorizationUrl(providerName: string, state: string): string {
   const provider = getProvider(providerName);
   if (!provider) {
@@ -94,7 +154,7 @@ export function createAuthorizationUrl(providerName: string, state: string): str
 
   const url = new URL(provider.authorizeUrl);
   url.searchParams.set('client_id', provider.clientId);
-  url.searchParams.set('redirect_uri', getRedirectUri(provider.name));
+  url.searchParams.set('redirect_uri', `${config.appUrl}/auth/${provider.name}/callback`);
   url.searchParams.set('scope', provider.scopes.join(' '));
   url.searchParams.set('state', state);
   return url.toString();
@@ -117,7 +177,7 @@ export async function exchangeCodeForProfile(providerName: string, code: string)
       client_id: provider.clientId,
       client_secret: provider.clientSecret,
       code,
-      redirect_uri: getRedirectUri(provider.name),
+      redirect_uri: `${config.appUrl}/auth/${provider.name}/callback`,
     }),
   });
 
@@ -160,9 +220,10 @@ export async function exchangeCodeForProfile(providerName: string, code: string)
 
 export function ensureOAuthAccess(providerName: string, providerUserId: string): void {
   const existingUser = findUserByProvider(providerName, providerUserId);
-  const listed = isAllowlisted(providerName, providerUserId);
+  const allowlist = getOAuthAllowlist();
+  const listed = allowlist.has(getAllowlistKey(providerName, providerUserId));
 
-  if (config.oauthAllowlist.size > 0 && !listed) {
+  if (allowlist.size > 0 && !listed) {
     throw new Error('This OAuth account is not allowed to access the admin area.');
   }
 

@@ -1,0 +1,67 @@
+<%- include('partials/header', { title: '认证设置' }) %>
+<section class="panel stack">
+  <h1>后台认证设置</h1>
+  <p class="muted">你可以在这里切换后台登录方式，并在部署完成后补充或启用 GitHub OAuth。</p>
+
+  <% if (errorMessage) { %>
+    <p class="error"><%= errorMessage %></p>
+  <% } %>
+  <% if (successMessage) { %>
+    <p class="success"><%= successMessage %></p>
+  <% } %>
+
+  <form class="stack" method="post" action="/admin/auth-settings">
+    <label>
+      后台登录方式
+      <select name="auth_mode" required>
+        <option value="local" <%= settings.authMode === 'local' ? 'selected' : '' %>>仅用户名 + 密码</option>
+        <option value="github" <%= settings.authMode === 'github' ? 'selected' : '' %>>仅 GitHub OAuth</option>
+        <option value="both" <%= settings.authMode === 'both' ? 'selected' : '' %>>同时启用两种方式</option>
+      </select>
+    </label>
+
+    <section class="card stack">
+      <h2>GitHub OAuth 登录配置</h2>
+      <p class="muted">如果你还没有创建 OAuth App，请打开 GitHub Developer Settings → OAuth Apps → New OAuth App。</p>
+      <div class="details-grid">
+        <div>
+          <dt>Homepage URL</dt>
+          <dd><code><%= settings.github.loginUrl.replace(/\/login$/, '') %></code></dd>
+        </div>
+        <div>
+          <dt>Authorization callback URL</dt>
+          <dd><code><%= settings.github.callbackUrl %></code></dd>
+        </div>
+      </div>
+      <label>
+        GitHub Client ID
+        <input type="text" name="github_client_id" value="<%= settings.github.clientId %>" placeholder="OAuth App 的公开客户端标识" />
+      </label>
+      <label>
+        GitHub Client Secret
+        <input type="password" name="github_client_secret" value="" placeholder="留空表示保留当前已保存的 Secret" />
+      </label>
+      <label>
+        允许登录后台的 GitHub 用户 ID
+        <textarea name="oauth_allowlist" rows="3" placeholder="示例：github:123456,github:789012"><%= settings.github.allowlistRaw %></textarea>
+      </label>
+      <p class="muted">这里填写的是 GitHub 用户 ID，不是用户名。可以在浏览器打开 <code>https://api.github.com/users/你的GitHub用户名</code> 查看返回结果中的 <code>id</code> 字段。</p>
+    </section>
+
+    <section class="card stack">
+      <h2>本地用户名 + 密码</h2>
+      <% if (settings.localUsers.length === 0) { %>
+        <p class="muted">当前没有可用的本地管理员账号。请通过部署脚本重新生成本地管理员配置后重启，或先切换到 GitHub OAuth。</p>
+      <% } else { %>
+        <ul class="plain-list">
+          <% settings.localUsers.forEach((user) => { %>
+            <li><strong><%= user.username %></strong>（状态：<%= user.status %>）</li>
+          <% }) %>
+        </ul>
+      <% } %>
+    </section>
+
+    <button class="button" type="submit">保存认证设置</button>
+  </form>
+</section>
+<%- include('partials/footer') %>
