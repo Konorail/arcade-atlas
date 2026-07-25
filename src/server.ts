@@ -71,7 +71,6 @@ app.set('views', viewsDir);
 app.use(express.static(publicDir));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use('/login', authEntryRateLimit);
 app.use('/auth', authEntryRateLimit);
 app.use('/admin', adminRouteRateLimit);
 app.use('/api/admin', adminRouteRateLimit);
@@ -155,11 +154,11 @@ app.get('/', (_request, response) => {
   response.render('home');
 });
 
-app.get('/login', (_request, response) => {
+app.get('/login', authEntryRateLimit, (_request, response) => {
   response.render('login', buildLoginViewData());
 });
 
-app.post('/login', (request, response) => {
+app.post('/login', authEntryRateLimit, (request, response) => {
   if (!isLocalLoginEnabled()) {
     response.status(400).render('login', buildLoginViewData({ errorMessage: '当前部署未启用用户名和密码登录。' }));
     return;
