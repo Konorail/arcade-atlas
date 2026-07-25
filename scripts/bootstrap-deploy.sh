@@ -277,6 +277,135 @@ validate_port_value() {
   fi
 }
 
+is_truthy_value() {
+  local value="$1"
+  case "${value,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_env_path() {
+  local path_value="$1"
+  local default_value="$2"
+  local candidate="$path_value"
+
+  if [[ -z "$candidate" ]]; then
+    candidate="$default_value"
+  fi
+
+  python3 - "$TARGET_DIR" "$candidate" <<'PYTHON_RESOLVE_PATH'
+import os
+import sys
+
+target_dir = sys.argv[1]
+candidate = sys.argv[2]
+if os.path.isabs(candidate):
+    print(os.path.normpath(candidate))
+else:
+    print(os.path.normpath(os.path.join(target_dir, candidate)))
+PYTHON_RESOLVE_PATH
+}
+
+detect_github_oauth_user_state() {
+  local database_path="$1"
+  python3 - "$database_path" <<'PYTHON_CHECK_GITHUB_USERS'
+import os
+import sqlite3
+import sys
+
+database_path = sys.argv[1]
+
+if not os.path.exists(database_path):
+    print("missing")
+    raise SystemExit(0)
+
+try:
+    connection = sqlite3.connect(database_path)
+    cursor = connection.cursor()
+    cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users' LIMIT 1")
+    if cursor.fetchone() is None:
+        print("missing")
+        raise SystemExit(0)
+
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(users)")}
+    if "oauth_provider" in columns and "status" in columns:
+        row = cursor.execute(
+            "SELECT 1 FROM users WHERE auth_type = 'oauth' AND oauth_provider = 'github' AND status = 'active' LIMIT 1"
+        ).fetchone()
+    elif "oauth_provider" in columns:
+        row = cursor.execute(
+            "SELECT 1 FROM users WHERE auth_type = 'oauth' AND oauth_provider = 'github' LIMIT 1"
+        ).fetchone()
+    else:
+        row = None
+
+    print("present" if row else "missing")
+except sqlite3.DatabaseError:
+    print("unknown")
+finally:
+    try:
+        connection.close()
+    except Exception:
+        pass
+PYTHON_CHECK_GITHUB_USERS
+}
+
+validate_auth_configuration_before_start() {
+  local env_file="$1"
+  local auth_mode client_id client_secret allowlist allow_first_login
+  local local_username password_hash password_salt database_path github_user_state
+  local missing_items=()
+
+  auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
+  allow_first_login="$(read_env_value "$env_file" "ALLOW_FIRST_LOGIN")"
+
+  case "$auth_mode" in
+    local|both)
+      local_username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+      password_hash="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_HASH")"
+      password_salt="$(read_env_value "$env_file" "LOCAL_ADMIN_PASSWORD_SALT")"
+      [[ -n "$local_username" ]] || missing_items+=("LOCAL_ADMIN_USERNAME")
+      [[ -n "$password_hash" ]] || missing_items+=("LOCAL_ADMIN_PASSWORD_HASH")
+      [[ -n "$password_salt" ]] || missing_items+=("LOCAL_ADMIN_PASSWORD_SALT")
+      ;;
+  esac
+
+  case "$auth_mode" in
+    github|both)
+      client_id="$(read_env_value "$env_file" "GITHUB_CLIENT_ID")"
+      client_secret="$(read_env_value "$env_file" "GITHUB_CLIENT_SECRET")"
+      allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
+      [[ -n "$client_id" ]] || missing_items+=("GITHUB_CLIENT_ID")
+      [[ -n "$client_secret" ]] || missing_items+=("GITHUB_CLIENT_SECRET")
+
+      if [[ -z "$allowlist" ]] && ! is_truthy_value "$allow_first_login"; then
+        database_path="$(resolve_env_path "$(read_env_value "$env_file" "DATABASE_PATH")" "./data/arcade-atlas.sqlite")"
+        github_user_state="$(detect_github_oauth_user_state "$database_path")"
+        case "$github_user_state" in
+          missing)
+            missing_items+=("OAUTH_ALLOWLIST")
+            ;;
+          unknown)
+            warn "启动前未能读取现有数据库中的 GitHub 管理员账号信息：$database_path"
+            warn "当前 OAUTH_ALLOWLIST 为空，如需限制首次登录，建议先补全该配置。"
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [[ "${#missing_items[@]}" -gt 0 ]]; then
+    fail_step "启动前认证配置检查失败：AUTH_MODE=${auth_mode:-未设置} 的配置不完整。" \
+      "缺少以下配置：${missing_items[*]}" \
+      "请先补全 $env_file 后再重新启动容器。"
+  fi
+}
+
 set_env_value() {
   local env_file="$1"
   local key="$2"
@@ -714,6 +843,7 @@ run_docker_deploy() {
   local env_file="$TARGET_DIR/.env"
   local port
   port="$(read_env_value "$env_file" "PORT")"
+  validate_auth_configuration_before_start "$env_file"
 
   confirm '将通过 docker compose 构建并启动服务，这可能重建现有容器，是否继续？' || fail_step '用户取消启动 Docker 服务。'
 

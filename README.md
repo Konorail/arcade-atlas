@@ -85,8 +85,9 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 4. 要求你选择后台认证方式
 5. 生成 `.env`
 6. 启动 Docker Compose
-7. 执行健康检查
-8. 输出最终访问地址与登录方式
+7. 启动前检查认证配置是否完整
+8. 执行健康检查
+9. 输出最终访问地址与登录方式
 
 ### Docker Compose Plugin 安装说明
 
@@ -132,6 +133,7 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - 补充或修改 GitHub OAuth Client ID / Client Secret
 - 修改 GitHub 用户 ID 白名单
 - 在首次部署选择“用户名 + 密码”后，后续再启用 GitHub OAuth
+- Docker 部署修改认证配置后，请重启容器再让新配置生效
 
 ## 主要路径
 

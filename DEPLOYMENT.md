@@ -63,6 +63,8 @@ APP_URL/login
 
 也就是说，首次认证方式与后续 OAuth 启用已经解耦。
 
+如果是 Docker 部署，后台保存认证配置后，请重启容器再让新配置生效。
+
 ---
 
 ## 三、关键环境变量
@@ -178,6 +180,7 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 - 检查或安装 Docker Compose Plugin
 - 选择后台认证方式
 - 生成 `.env`
+- 在 `docker compose up -d` 前预检查认证配置
 - 执行 `docker compose config`
 - 执行 `docker compose up -d --build`
 - 执行健康检查：`/health`

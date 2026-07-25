@@ -274,7 +274,7 @@ app.post('/admin/auth-settings', requireAdmin, (request, response) => {
     response.render('auth-settings', {
       settings: getAuthSettingsView(),
       errorMessage: null,
-      successMessage: '认证配置已保存。',
+      successMessage: '认证配置已保存。Docker 部署请重启容器后再使新配置生效。',
     });
   } catch (error) {
     response.status(400).render('auth-settings', {
