@@ -8,6 +8,7 @@ export type MachineTypeStatus = 'active' | 'inactive';
 export type RepairStatus = 'PENDING' | 'PROCESSING' | 'RESOLVED' | 'UNRESOLVED';
 export type UserStatus = 'active' | 'disabled';
 export type UserAuthType = 'local' | 'oauth';
+const introspectionTables = new Set(['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings']);
 
 fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 
@@ -23,6 +24,9 @@ function hasTable(name: string): boolean {
 }
 
 function hasColumn(table: string, column: string): boolean {
+  if (!introspectionTables.has(table)) {
+    throw new Error(`Unsupported table introspection target: ${table}`);
+  }
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return columns.some((item) => item.name === column);
 }

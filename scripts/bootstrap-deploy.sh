@@ -41,7 +41,7 @@ fail_step() {
 }
 
 usage() {
-  cat <<'EOF2'
+  cat <<'USAGE'
 用法：
   bash scripts/bootstrap-deploy.sh [选项]
 
@@ -57,7 +57,7 @@ usage() {
 示例：
   bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
   bash scripts/bootstrap-deploy.sh --mode docker --target-dir /opt/arcade-atlas
-EOF2
+USAGE
 }
 
 confirm() {
@@ -345,7 +345,7 @@ prompt_secret_value() {
 
 hash_password_for_env() {
   local secret_value="$1"
-  PASSWORD_INPUT="$secret_value" python3 <<'PY2'
+  PASSWORD_INPUT="$secret_value" python3 <<'PYTHON_HASH_PASSWORD'
 import base64
 import hashlib
 import os
@@ -355,7 +355,7 @@ salt = secrets.token_bytes(16)
 digest = hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1)
 print(base64.b64encode(salt).decode('ascii'))
 print(base64.b64encode(digest).decode('ascii'))
-PY2
+PYTHON_HASH_PASSWORD
 }
 
 configure_local_auth() {
@@ -408,7 +408,7 @@ configure_github_auth() {
   app_url="$(read_env_value "$env_file" "APP_URL")"
   callback_url="${app_url%/}/auth/github/callback"
 
-  cat <<EOF2
+  cat <<GITHUB_OAUTH_HELP
 
 【GitHub OAuth 登录配置】
 你需要先在 GitHub 创建一个 OAuth App。
@@ -426,7 +426,7 @@ $callback_url
 - 允许登录后台的 GitHub 用户：这里填写 GitHub 用户 ID，不是用户名
   获取方式示例：在浏览器打开 https://api.github.com/users/你的GitHub用户名 ，找到返回 JSON 中的 id 字段
   多个用户示例：github:123456,github:789012
-EOF2
+GITHUB_OAUTH_HELP
 
   client_id="$(read_env_value "$env_file" "GITHUB_CLIENT_ID")"
   prompt_value "$env_file" "GITHUB_CLIENT_ID" "GitHub Client ID（用途：OAuth App 的公开客户端标识）" "$client_id"
@@ -477,12 +477,12 @@ choose_auth_mode() {
   fi
 
   while true; do
-    cat <<'EOF2'
+    cat <<'AUTH_MODE_MENU'
 
 请选择后台登录方式：
   [1] 用户名 + 密码登录
   [2] GitHub OAuth 登录
-EOF2
+AUTH_MODE_MENU
     read -r -p '请输入 1 或 2: ' auth_mode
     case "$auth_mode" in
       1)
