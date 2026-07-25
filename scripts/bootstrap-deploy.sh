@@ -239,12 +239,12 @@ read_env_value() {
 
 validate_http_url() {
   local value="$1"
-  [[ "$value" =~ ^https?://[^[:space:]]+$ ]] || die "APP_URL 必须是合法的 http:// 或 https:// 地址。"
+  [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || die "APP_URL 必须是合法的 http:// 或 https:// 地址。"
 }
 
 validate_port_value() {
   local value="$1"
-  [[ "$value" =~ ^[0-9]+$ ]] || die "PORT 必须是 1-65535 之间的整数。"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "PORT 必须是有效整数。"
   if (( value < 1 || value > 65535 )); then
     die "PORT 必须是 1-65535 之间的整数。"
   fi
