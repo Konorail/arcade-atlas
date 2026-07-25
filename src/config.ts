@@ -15,6 +15,7 @@ export type ProviderConfig = {
 };
 
 const rootDir = process.cwd();
+const trailingSlashesPattern = /\/+$/;
 
 function readOptionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -34,7 +35,7 @@ function parseAppUrl(value: string | undefined, fallback: string): string {
     throw new Error('APP_URL must start with http:// or https://.');
   }
 
-  return parsed.toString().replace(/\/+$/, '');
+  return parsed.toString().replace(trailingSlashesPattern, '');
 }
 
 function parseBoolean(value: string | undefined, fallback = false): boolean {
