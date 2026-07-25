@@ -13,7 +13,6 @@ DOCKER_BIN=(docker)
 OS_ID=""
 OS_PRETTY_NAME=""
 VERSION_CODENAME=""
-DOCKER_REPO_URL=""
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -616,7 +615,7 @@ set_docker_command() {
     DOCKER_BIN=(docker)
   else
     ensure_sudo
-    DOCKER_BIN=($SUDO docker)
+    DOCKER_BIN=("$SUDO" "docker")
     if ! "${DOCKER_BIN[@]}" info >/dev/null 2>&1; then
       fail_step 'Docker 已安装，但当前用户仍无法访问 Docker 守护进程。' '请执行：sudo systemctl status docker' '如需当前用户直接使用 Docker，可将用户加入 docker 组后重新登录。'
     fi
@@ -630,7 +629,6 @@ ensure_docker_repository() {
   local keyring_path="${keyring_dir}/docker.asc"
   local repo_line
 
-  DOCKER_REPO_URL="$repo_base"
   log "检查 Docker 官方仓库是否支持当前系统代号：$VERSION_CODENAME"
   if ! curl -fsSLI "$release_url" >/dev/null 2>&1; then
     fail_step 'Docker 官方仓库暂不支持当前系统版本。' \
@@ -764,9 +762,7 @@ run_node_deploy() {
 run_health_check() {
   local port="$1"
   local url="http://127.0.0.1:${port}/health"
-  local attempt
-
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     if curl -fsS -o /dev/null "$url"; then
       log "健康检查通过：$url"
       return
