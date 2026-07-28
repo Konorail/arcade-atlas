@@ -583,16 +583,20 @@ create_backup_snapshot() {
       $SUDO cp "$database_path" "$backup_dir/$(basename "$database_path")"
       $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "$database_path")" 2>/dev/null || true
     }
-    [[ -f "${database_path}-wal" ]] && cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || {
-      ensure_sudo
-      $SUDO cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
-      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || true
-    }
-    [[ -f "${database_path}-shm" ]] && cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || {
-      ensure_sudo
-      $SUDO cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
-      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || true
-    }
+    if [[ -f "${database_path}-wal" ]]; then
+      cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || {
+        ensure_sudo
+        $SUDO cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
+        $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || true
+      }
+    fi
+    if [[ -f "${database_path}-shm" ]]; then
+      cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || {
+        ensure_sudo
+        $SUDO cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
+        $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || true
+      }
+    fi
   fi
 
   printf '%s\n' "$backup_dir"
@@ -1551,7 +1555,7 @@ stop_existing_node_service() {
   local existing_pid=""
   local port=""
 
-  [[ -f "$pid_file" ]] || return
+  [[ -f "$pid_file" ]] || return 0
   existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
   port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
@@ -1585,7 +1589,7 @@ stop_node_service_for_cleanup() {
   local existing_pid=""
   local port=""
 
-  [[ -f "$pid_file" ]] || return
+  [[ -f "$pid_file" ]] || return 0
   existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
   port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
@@ -1718,7 +1722,7 @@ detect_deployment_state_file_status() {
   STATE_FILE_DEPLOY_VERSION=""
   STATE_FILE_TARGET_DIR=""
 
-  [[ -f "$state_file" ]] || return
+  [[ -f "$state_file" ]] || return 0
 
   mode_value="$(read_env_value "$state_file" "DEPLOY_MODE" 2>/dev/null || true)"
   status_value="$(read_env_value "$state_file" "DEPLOY_STATUS" 2>/dev/null || true)"
@@ -1942,7 +1946,7 @@ detect_existing_deployment_status() {
 
 remove_path_force() {
   local target_path="$1"
-  [[ -e "$target_path" || -L "$target_path" ]] || return
+  [[ -e "$target_path" || -L "$target_path" ]] || return 0
   rm -rf "$target_path" 2>/dev/null && return
   ensure_sudo
   $SUDO rm -rf "$target_path"
