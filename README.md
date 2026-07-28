@@ -9,6 +9,8 @@
   - GitHub OAuth
 - 安装脚本会明确要求你二选一完成首次部署
 - 安装脚本支持首次安装、部署状态检测、版本检测、安全升级、重置部署、完全清理与健康检查
+- 空数据库首次使用 GitHub OAuth 登录时，首个用户会自动成为管理员，后续新 OAuth 用户默认为普通用户
+- 历史数据库补齐 RBAC 角色时遵循最小权限原则，不会批量把所有历史用户提升为管理员
 - 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
 - 首页可直接进入公开机台列表，按机台类型选择机台后提交报修
@@ -152,6 +154,9 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许访问后台的 GitHub 用户列表，格式为 `github:用户ID`
 - `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的 GitHub 用户首次自动创建
+  - 空数据库下的首个 OAuth 用户会自动创建为 `admin`
+  - 后续自动创建的 OAuth 用户默认为 `user`
+  - 历史数据库迁移只会在缺少管理员时为最早用户补一个管理员，不会批量提权
 
 ## 版本与升级
 

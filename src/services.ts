@@ -204,6 +204,11 @@ function getSetting(key: string): string | undefined {
   return row?.setting_value;
 }
 
+function isFirstUser(): boolean {
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM users`).get() as { count: number };
+  return row.count === 0;
+}
+
 function setSetting(key: string, value: string): void {
   const timestamp = now();
   db.prepare(
@@ -431,7 +436,6 @@ export function upsertOAuthUser(input: {
   const name = requiredText(input.name, 'User name', 80);
   const email = optionalText(input.email, 'User email', 254);
   const avatar = optionalText(input.avatar, 'User avatar', 500);
-  const role = optionalStatus(input.role ?? 'user', userRoles, 'user role');
   const existing = db
     .prepare(`SELECT * FROM users WHERE oauth_provider = ? AND oauth_provider_user_id = ?`)
     .get(input.provider, input.providerUserId) as User | undefined;
@@ -446,6 +450,8 @@ export function upsertOAuthUser(input: {
     return db.prepare(`SELECT * FROM users WHERE id = ?`).get(existing.id) as User;
   }
 
+  const defaultRole: UserRole = isFirstUser() ? 'admin' : 'user';
+  const role = optionalStatus(input.role ?? defaultRole, userRoles, 'user role');
   const result = db
     .prepare(
       `INSERT INTO users (

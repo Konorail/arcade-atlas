@@ -263,6 +263,29 @@ function runMigration(name: string, apply: () => void): void {
   recordMigration(name);
 }
 
+function hasAnyUsers(): boolean {
+  const row = db.prepare(`SELECT id FROM users ORDER BY id ASC LIMIT 1`).get() as { id: number } | undefined;
+  return Boolean(row);
+}
+
+function hasAdminUsers(): boolean {
+  const row = db.prepare(`SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`).get() as { id: number } | undefined;
+  return Boolean(row);
+}
+
+function promoteEarliestUserToAdmin(): void {
+  db.exec(`
+    UPDATE users
+    SET role = 'admin'
+    WHERE id = (
+      SELECT id
+      FROM users
+      ORDER BY id ASC
+      LIMIT 1
+    )
+  `);
+}
+
 function migrateMachineTypesVersionField(): void {
   runMigration('20260728_machine_types_version', () => {
     if (!hasColumn('machine_types', 'version')) {
@@ -283,7 +306,50 @@ function migrateUsersRole(): void {
   runMigration('20260728_users_role', () => {
     if (!hasColumn('users', 'role')) {
       db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'repair', 'admin'))`);
-      db.exec(`UPDATE users SET role = 'admin' WHERE role IS NULL OR TRIM(role) = '' OR role = 'user'`);
+    }
+
+    if (hasAnyUsers() && !hasAdminUsers()) {
+      promoteEarliestUserToAdmin();
+    }
+  });
+}
+
+function migrateUsersRoleBootstrapAdmin(): void {
+  runMigration('20260728_users_role_bootstrap_admin', () => {
+    if (!hasColumn('users', 'role')) {
+      return;
+    }
+
+    const summary = db.prepare(
+      `SELECT
+         COUNT(*) AS total_users,
+         SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admin_users,
+         SUM(CASE WHEN role != 'admin' THEN 1 ELSE 0 END) AS non_admin_users
+       FROM users`,
+    ).get() as { total_users: number; admin_users: number | null; non_admin_users: number | null };
+
+    if (summary.total_users === 0) {
+      return;
+    }
+
+    if ((summary.admin_users ?? 0) === 0) {
+      promoteEarliestUserToAdmin();
+      return;
+    }
+
+    if (summary.total_users > 1 && (summary.admin_users ?? 0) === summary.total_users && (summary.non_admin_users ?? 0) === 0) {
+      db.exec(`
+        UPDATE users
+        SET role = CASE
+          WHEN id = (
+            SELECT id
+            FROM users
+            ORDER BY id ASC
+            LIMIT 1
+          ) THEN 'admin'
+          ELSE 'user'
+        END
+      `);
     }
   });
 }
@@ -492,6 +558,7 @@ if (hasTable('users')) {
 initializeSchema();
 ensureUsersTableColumns();
 migrateUsersRole();
+migrateUsersRoleBootstrapAdmin();
 migrateMachineTypesVersionField();
 migrateMachinesSoftDelete();
 migrateMachinesDropLocation();
