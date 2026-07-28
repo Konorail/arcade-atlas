@@ -337,7 +337,7 @@ function migrateUsersRoleBootstrapAdmin(): void {
       return;
     }
 
-    if (summary.total_users > 1 && (summary.admin_users ?? 0) === summary.total_users && (summary.non_admin_users ?? 0) === 0) {
+    if (summary.total_users > 1 && (summary.admin_users ?? 0) === summary.total_users) {
       db.exec(`
         UPDATE users
         SET role = CASE
