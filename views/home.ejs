@@ -1,14 +1,121 @@
 <%- include('partials/header', { title: '首页' }) %>
-<section class="panel stack">
+
+<section class="hero">
   <h1>Arcade Atlas</h1>
-  <p>围绕实体机台建立类型、二维码、报修记录与维修历史。</p>
-  <ul>
-    <li>访客扫码后可直接查看机台详情并提交报修</li>
-    <li>后台用户通过 OAuth 登录后管理机台类型、具体机台、报修和维修日志</li>
-    <li>每台机台都有稳定的数字身份与可再生的二维码</li>
-  </ul>
-  <div class="actions">
-    <a class="button" href="/login">进入后台</a>
+  <p>机台报修与维修管理系统，可快速提交报修、查看维修记录及管理机台。</p>
+  <div class="hero-actions">
+    <a class="button large" href="/machines">申请报修</a>
   </div>
 </section>
+
+<div class="grid two-columns">
+
+    <article class="panel stack">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h2 style="margin:0;font-size:1rem;font-weight:700;">最近报修记录</h2>
+        <span class="muted" style="font-size:0.78rem;"></span>
+      </div>
+      <div id="repairs-feed">
+        <% if (recentRepairs.length === 0) { %>
+          <p class="empty-state">暂无报修记录。</p>
+        <% } else { %>
+          <% recentRepairs.forEach((repair) => { %>
+            <div class="feed-item">
+              <div class="feed-dot"></div>
+              <div>
+                <div class="feed-time"><%= repair.created_at.replace('T',' ').slice(0,16) %></div>
+                <div class="feed-machine"><%= repair.machine_name %></div>
+                <div class="feed-content"><%= repair.content %></div>
+              </div>
+            </div>
+          <% }) %>
+        <% } %>
+      </div>
+    </article>
+
+    <article class="panel stack">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h2 style="margin:0;font-size:1rem;font-weight:700;">最近维修记录</h2>
+        <span class="muted" style="font-size:0.78rem;"></span>
+      </div>
+      <div id="logs-feed">
+        <% if (recentMaintenanceLogs.length === 0) { %>
+          <p class="empty-state">暂无维修记录。</p>
+        <% } else { %>
+          <% recentMaintenanceLogs.forEach((log) => { %>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:#7c3aed;"></div>
+              <div>
+                <div class="feed-time"><%= log.created_at.replace('T',' ').slice(0,16) %></div>
+                <div class="feed-machine"><%= log.machine_name %></div>
+                <div class="feed-content"><strong><%= log.operator_name %></strong>：<%= log.content %></div>
+              </div>
+            </div>
+          <% }) %>
+        <% } %>
+      </div>
+    </article>
+
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+function escapeHtml(text) {
+  var d = document.createElement('div');
+  d.textContent = text || '';
+  return d.innerHTML;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  return iso.replace('T', ' ').slice(0, 16);
+}
+
+function renderRepairs(items) {
+  var feed = document.getElementById('repairs-feed');
+  if (!items || items.length === 0) {
+    feed.innerHTML = '<p class="empty-state">暂无报修记录。</p>';
+    return;
+  }
+  feed.innerHTML = items.map(function(r) {
+    return '<div class="feed-item"><div class="feed-dot"></div><div>' +
+      '<div class="feed-time">' + escapeHtml(formatTime(r.created_at)) + '</div>' +
+      '<div class="feed-machine">' + escapeHtml(r.machine_name || '') + '</div>' +
+      '<div class="feed-content">' + escapeHtml(r.content) + '</div>' +
+      '</div></div>';
+  }).join('');
+}
+
+function renderLogs(items) {
+  var feed = document.getElementById('logs-feed');
+  if (!items || items.length === 0) {
+    feed.innerHTML = '<p class="empty-state">暂无维修记录。</p>';
+    return;
+  }
+  feed.innerHTML = items.map(function(l) {
+    return '<div class="feed-item"><div class="feed-dot" style="background:#7c3aed;"></div><div>' +
+      '<div class="feed-time">' + escapeHtml(formatTime(l.created_at)) + '</div>' +
+      '<div class="feed-machine">' + escapeHtml(l.machine_name || '') + '</div>' +
+      '<div class="feed-content"><strong>' + escapeHtml(l.operator_name || '') + '</strong>：' + escapeHtml(l.content) + '</div>' +
+      '</div></div>';
+  }).join('');
+}
+
+function pollRepairs() {
+  fetch('/api/recent-repairs').then(function(res) {
+    if (res.ok) return res.json().then(function(d) { renderRepairs(d.items); });
+  }).catch(function() {});
+}
+
+function pollLogs() {
+  fetch('/api/recent-maintenance-logs').then(function(res) {
+    if (res.ok) return res.json().then(function(d) { renderLogs(d.items); });
+  }).catch(function() {});
+}
+
+setInterval(pollRepairs, 15000);
+setInterval(pollLogs, 15000);
+</script>
+
 <%- include('partials/footer') %>

@@ -16,7 +16,7 @@
       <label>状态
         <select name="status">
           <% statuses.machineStatuses.forEach((status) => { %>
-            <option value="<%= status %>" <%= machine.status === status ? 'selected' : '' %>><%= status %></option>
+            <option value="<%= status %>" <%= machine.status === status ? 'selected' : '' %>><%= machineStatusLabel(status) %></option>
           <% }) %>
         </select>
       </label>
@@ -43,14 +43,17 @@
   <article class="panel stack">
     <h2>最近报修记录</h2>
     <% if (history.recentRepairs.length === 0) { %>
-      <p>暂无报修记录。</p>
+      <p class="empty-state">暂无报修记录。</p>
     <% } else { %>
       <div class="stack">
         <% history.recentRepairs.forEach((repair) => { %>
           <article class="card stack compact">
-            <a href="/admin/repairs/<%= repair.id %>"><strong>#<%= repair.id %> · <%= repair.status %></strong></a>
-            <span><%= repair.created_at %></span>
-            <p><%= repair.content %></p>
+            <a href="/admin/repairs/<%= repair.id %>">
+              <strong>#<%= repair.id %></strong>
+              <span class="status-badge <%= repairStatusClass(repair.status) %>"><%= repairStatusLabel(repair.status) %></span>
+            </a>
+            <span class="muted" style="font-size:0.8rem;"><%= repair.created_at.replace('T',' ').slice(0,16) %></span>
+            <p style="margin:0;"><%= repair.content %></p>
           </article>
         <% }) %>
       </div>
@@ -60,15 +63,15 @@
   <article class="panel stack">
     <h2>最近维修日志</h2>
     <% if (history.recentMaintenanceLogs.length === 0) { %>
-      <p>暂无维修日志。</p>
+      <p class="empty-state">暂无维修日志。</p>
     <% } else { %>
       <div class="stack">
         <% history.recentMaintenanceLogs.forEach((log) => { %>
           <article class="card stack compact">
             <strong><%= log.operator_name %></strong>
-            <span><%= log.created_at %></span>
-            <p><%= log.content %></p>
-            <span>结果：<%= log.result %></span>
+            <span class="muted" style="font-size:0.8rem;"><%= log.created_at.replace('T',' ').slice(0,16) %></span>
+            <p style="margin:0;"><%= log.content %></p>
+            <span class="muted" style="font-size:0.85rem;">结果：<%= log.result %></span>
           </article>
         <% }) %>
       </div>

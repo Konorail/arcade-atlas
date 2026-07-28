@@ -3,7 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { config } from './config';
 
-export type MachineStatus = 'normal' | 'maintenance' | 'disabled';
+export type MachineStatus = 'normal' | 'maintenance' | 'repairing' | 'disabled';
 export type MachineTypeStatus = 'active' | 'inactive';
 export type RepairStatus = 'PENDING' | 'PROCESSING' | 'RESOLVED' | 'UNRESOLVED';
 export type UserStatus = 'active' | 'disabled';
@@ -223,12 +223,56 @@ function initializeSchema(): void {
   `);
 }
 
+function ensureMachineRepairingStatus(): void {
+  if (!hasTable('machines')) {
+    return;
+  }
+
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'machines'`)
+    .get() as { sql: string } | undefined;
+
+  if (!row || row.sql.includes("'repairing'")) {
+    return;
+  }
+
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN TRANSACTION;
+    CREATE TABLE machines_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      machine_type_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      machine_code TEXT NOT NULL UNIQUE,
+      location TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'normal' CHECK (status IN ('normal', 'maintenance', 'repairing', 'disabled')),
+      qr_token TEXT NOT NULL UNIQUE,
+      description TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (machine_type_id) REFERENCES machine_types(id)
+    );
+    INSERT INTO machines_new SELECT * FROM machines;
+    DROP TABLE machines;
+    ALTER TABLE machines_new RENAME TO machines;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_machines_type_id ON machines(machine_type_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_machines_qr_token ON machines(qr_token);
+  `);
+}
+
 if (hasTable('users')) {
   rebuildLegacyUsersTable();
 }
 
 initializeSchema();
 ensureUsersTableColumns();
+ensureMachineRepairingStatus();
 
 export function closeDatabase(): void {
   db.close();

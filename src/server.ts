@@ -35,7 +35,10 @@ import {
   isLocalLoginEnabled,
   listMachineTypes,
   listMachines,
+  listMachinesPublic,
   listMaintenanceLogsForRepair,
+  listRecentMaintenanceLogs,
+  listRecentRepairs,
   listRepairs,
   saveGithubOAuthSettings,
   setEffectiveAuthMode,
@@ -51,6 +54,35 @@ const app = express();
 const viewsDir = path.join(process.cwd(), 'views');
 const publicDir = path.join(process.cwd(), 'public');
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+const machineStatusLabels: Record<string, string> = {
+  normal: '正常',
+  maintenance: '维护中',
+  repairing: '报修中',
+  disabled: '离线',
+};
+const machineStatusClasses: Record<string, string> = {
+  normal: 'status-normal',
+  maintenance: 'status-maintenance',
+  repairing: 'status-repairing',
+  disabled: 'status-disabled',
+};
+const repairStatusLabels: Record<string, string> = {
+  PENDING: '待处理',
+  PROCESSING: '处理中',
+  RESOLVED: '已解决',
+  UNRESOLVED: '无法解决',
+};
+const repairStatusClasses: Record<string, string> = {
+  PENDING: 'status-pending',
+  PROCESSING: 'status-processing',
+  RESOLVED: 'status-resolved',
+  UNRESOLVED: 'status-unresolved',
+};
+const machineTypeStatusLabels: Record<string, string> = {
+  active: '启用',
+  inactive: '停用',
+};
 const authEntryRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -91,6 +123,11 @@ app.use((request, response, next) => {
   response.locals.localLoginEnabled = isLocalLoginEnabled();
   response.locals.authMode = getEffectiveAuthMode();
   response.locals.statuses = getStatusOptions();
+  response.locals.machineStatusLabel = (s: string) => machineStatusLabels[s] ?? s;
+  response.locals.machineStatusClass = (s: string) => machineStatusClasses[s] ?? '';
+  response.locals.repairStatusLabel = (s: string) => repairStatusLabels[s] ?? s;
+  response.locals.repairStatusClass = (s: string) => repairStatusClasses[s] ?? '';
+  response.locals.machineTypeStatusLabel = (s: string) => machineTypeStatusLabels[s] ?? s;
   next();
 });
 
@@ -151,7 +188,22 @@ app.get('/health', (_request, response) => {
 });
 
 app.get('/', (_request, response) => {
-  response.render('home');
+  response.render('home', {
+    recentRepairs: listRecentRepairs(15),
+    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
+  });
+});
+
+app.get('/machines', (_request, response) => {
+  const machines = listMachinesPublic();
+  const categoryMap = new Map<string, typeof machines>();
+  for (const machine of machines) {
+    const cat = machine.category ?? '其他';
+    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+    categoryMap.get(cat)!.push(machine);
+  }
+  const categories = Array.from(categoryMap.entries()).map(([category, items]) => ({ category, machines: items }));
+  response.render('public-machines', { categories });
 });
 
 app.get('/login', authEntryRateLimit, (_request, response) => {
@@ -444,6 +496,18 @@ app.get('/api/machines/:token/maintenance-logs', (request, response) => {
   }
 
   response.json({ items: view.recentMaintenanceLogs });
+});
+
+app.get('/api/recent-repairs', (_request, response) => {
+  response.json({ items: listRecentRepairs(15) });
+});
+
+app.get('/api/recent-maintenance-logs', (_request, response) => {
+  response.json({ items: listRecentMaintenanceLogs(15) });
+});
+
+app.get('/api/machines', (_request, response) => {
+  response.json({ items: listMachinesPublic() });
 });
 
 app.get('/api/admin/machine-types', requireAdmin, (_request, response) => {

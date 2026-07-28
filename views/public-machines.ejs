@@ -1,0 +1,41 @@
+<%- include('partials/header', { title: '申请报修' }) %>
+
+  <div style="margin-bottom:1.5rem;">
+    <h1 style="margin:0 0 0.25rem;font-size:1.6rem;font-weight:800;letter-spacing:-0.02em;">申请报修</h1>
+    <p class="muted" style="margin:0;">选择需要报修的机台，提交报修请求。</p>
+  </div>
+
+  <% if (categories.length === 0) { %>
+    <div class="panel">
+      <p class="empty-state">暂无可用机台。</p>
+    </div>
+  <% } else { %>
+    <% categories.forEach(function(cat) { %>
+      <div class="category-section">
+        <h2 class="category-label"><%= cat.category %></h2>
+        <div class="machines-grid">
+          <% cat.machines.forEach(function(machine) { %>
+            <div class="machine-card">
+              <h3><%= machine.name %></h3>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <span class="status-badge <%= machineStatusClass(machine.status) %>"><%= machineStatusLabel(machine.status) %></span>
+                <% if (machine.type_name) { %><span class="muted" style="font-size:0.8rem;"><%= machine.type_name %></span><% } %>
+              </div>
+              <% if (machine.location) { %>
+                <div class="muted" style="font-size:0.82rem;">📍 <%= machine.location %></div>
+              <% } %>
+              <div style="margin-top:auto;">
+                <% if (machine.status === 'normal' || machine.status === 'repairing') { %>
+                  <a class="button" href="/machine/<%= machine.qr_token %>" style="width:100%;margin-top:0.5rem;">申请报修</a>
+                <% } else { %>
+                  <button class="button" disabled style="width:100%;margin-top:0.5rem;opacity:0.5;cursor:not-allowed;">机台不可用</button>
+                <% } %>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+    <% }) %>
+  <% } %>
+
+<%- include('partials/footer') %>

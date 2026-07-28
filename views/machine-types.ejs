@@ -13,7 +13,7 @@
       <label>状态
         <select name="status">
           <% statuses.machineTypeStatuses.forEach((status) => { %>
-            <option value="<%= status %>" <%= (editing?.status || 'active') === status ? 'selected' : '' %>><%= status %></option>
+            <option value="<%= status %>" <%= (editing?.status || 'active') === status ? 'selected' : '' %>><%= machineTypeStatusLabel(status) %></option>
           <% }) %>
         </select>
       </label>
@@ -26,6 +26,7 @@
 
   <article class="panel stack">
     <h2>类型列表</h2>
+    <div class="table-wrap">
     <table>
       <thead><tr><th>名称</th><th>品牌</th><th>型号</th><th>分类</th><th>使用中机台</th><th>状态</th><th></th></tr></thead>
       <tbody>
@@ -36,12 +37,13 @@
             <td><%= type.model || '-' %></td>
             <td><%= type.category || '-' %></td>
             <td><%= type.active_machine_count || 0 %></td>
-            <td><%= type.status %></td>
+            <td><span class="status-badge <%= type.status === 'active' ? 'status-normal' : 'status-disabled' %>"><%= machineTypeStatusLabel(type.status) %></span></td>
             <td><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>
           </tr>
         <% }) %>
       </tbody>
     </table>
+    </div>
   </article>
 </section>
 <%- include('partials/footer') %>

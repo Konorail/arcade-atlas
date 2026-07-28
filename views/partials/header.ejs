@@ -10,18 +10,17 @@
     <header class="site-header">
       <div>
         <a href="/" class="brand"><%= appName %></a>
-        <p class="subtitle">轻量级机台管理与维修记录系统</p>
       </div>
       <nav>
         <% if (currentUser) { %>
-          <a href="/admin">后台</a>
+          <a href="/admin">后台总览</a>
           <a href="/admin/machine-types">机台类型</a>
-          <a href="/admin/machines">具体机台</a>
+          <a href="/admin/machines">机台管理</a>
           <a href="/admin/repairs">报修记录</a>
           <a href="/admin/auth-settings">认证设置</a>
           <a href="/logout">退出</a>
         <% } else { %>
-          <a href="/login">后台登录</a>
+          <a class="button small outline" href="/login">登录后台</a>
         <% } %>
       </nav>
     </header>
