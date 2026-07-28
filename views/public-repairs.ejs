@@ -2,7 +2,7 @@
 <section class="panel stack">
   <span class="eyebrow">申请报修</span>
   <h1>选择需要报修的机台</h1>
-  <p class="muted">按分类浏览机台，进入详情页后即可提交报修内容。</p>
+  <p class="muted">按机台类型浏览机台，进入详情页后即可提交报修内容。</p>
 </section>
 
 <% if (machineGroups.length === 0) { %>
@@ -24,7 +24,6 @@
               <span><%= machine.machine_code %></span>
             </div>
             <span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span>
-            <p class="muted"><%= machine.location %></p>
             <div class="actions">
               <a class="button" href="/machine/<%= machine.qr_token %>">申请报修</a>
             </div>

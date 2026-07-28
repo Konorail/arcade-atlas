@@ -1,4 +1,4 @@
-<%- include('partials/header', { title: '报修记录管理' }) %>
+<%- include('partials/header', { title: '报修记录' }) %>
 <section class="panel stack">
   <h1>报修记录</h1>
   <form method="get" action="/admin/repairs" class="filter-grid">
@@ -36,7 +36,14 @@
           <td data-label="状态"><span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span></td>
           <td data-label="时间"><%= formatDateTime(repair.created_at) %></td>
           <td data-label="问题描述"><%= repair.content %></td>
-          <td data-label="操作"><a href="/admin/repairs/<%= repair.id %>">详情</a></td>
+          <td data-label="操作">
+            <div class="inline-actions">
+              <a href="/admin/repairs/<%= repair.id %>">详情</a>
+              <form method="post" action="/admin/repairs/<%= repair.id %>/delete" data-confirm="确认删除该报修记录吗？关联的维护记录将一并从管理列表隐藏，删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+                <button class="link-button danger-text" type="submit">删除</button>
+              </form>
+            </div>
+          </td>
         </tr>
       <% }) %>
     </tbody>

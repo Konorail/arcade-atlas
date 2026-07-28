@@ -12,7 +12,6 @@
       </label>
       <label>机台名称<input name="name" required value="<%= machine.name %>" /></label>
       <label>机台编号<input name="machine_code" required value="<%= machine.machine_code %>" /></label>
-      <label>位置<input name="location" required value="<%= machine.location %>" /></label>
       <label>状态
         <select name="status">
           <% statuses.machineStatuses.forEach((status) => { %>
@@ -22,7 +21,12 @@
       </label>
       <label>描述<textarea name="description" rows="4"><%= machine.description || '' %></textarea></label>
       <label>备注<textarea name="notes" rows="3"><%= machine.notes || '' %></textarea></label>
-      <button class="button" type="submit">保存机台信息</button>
+      <div class="actions">
+        <button class="button" type="submit">保存机台信息</button>
+        <form method="post" action="/admin/machines/<%= machine.id %>/delete" data-confirm="确认删除该机台吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+          <button class="button danger" type="submit">删除机台</button>
+        </form>
+      </div>
     </form>
   </article>
 
@@ -68,7 +72,7 @@
             <strong><%= log.operator_name %></strong>
             <span><%= formatDateTime(log.created_at) %></span>
             <p><%= log.content %></p>
-            <span>结果：<%= log.result %></span>
+            <a href="/admin/maintenance-logs/<%= log.id %>">查看维护记录详情</a>
           </article>
         <% }) %>
       </div>
