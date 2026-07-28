@@ -12,13 +12,24 @@
         <a href="/" class="brand"><%= appName %></a>
         <p class="subtitle">轻量级机台管理与维修记录系统</p>
       </div>
-      <nav>
+      <button
+        class="nav-toggle"
+        type="button"
+        data-nav-toggle
+        aria-expanded="false"
+        aria-controls="site-nav"
+      >
+        菜单
+      </button>
+      <nav id="site-nav" class="site-nav" data-site-nav>
+        <a href="/" class="nav-link <%= currentPath === '/' ? 'is-active' : '' %>" <%= currentPath === '/' ? 'aria-current="page"' : '' %>>首页</a>
+        <a href="/repairs" class="nav-link <%= currentPath === '/repairs' || currentPath.startsWith('/machine/') ? 'is-active' : '' %>" <%= currentPath === '/repairs' || currentPath.startsWith('/machine/') ? 'aria-current="page"' : '' %>>申请报修</a>
         <% if (currentUser) { %>
-          <a href="/admin">后台</a>
-          <a href="/admin/machine-types">机台类型</a>
-          <a href="/admin/machines">具体机台</a>
-          <a href="/admin/repairs">报修记录</a>
-          <a href="/admin/auth-settings">认证设置</a>
+          <a href="/admin" class="nav-link <%= currentPath === '/admin' ? 'is-active' : '' %>" <%= currentPath === '/admin' ? 'aria-current="page"' : '' %>>后台</a>
+          <a href="/admin/machine-types" class="nav-link <%= currentPath.startsWith('/admin/machine-types') ? 'is-active' : '' %>" <%= currentPath.startsWith('/admin/machine-types') ? 'aria-current="page"' : '' %>>机台类型</a>
+          <a href="/admin/machines" class="nav-link <%= currentPath.startsWith('/admin/machines') ? 'is-active' : '' %>" <%= currentPath.startsWith('/admin/machines') ? 'aria-current="page"' : '' %>>具体机台</a>
+          <a href="/admin/repairs" class="nav-link <%= currentPath.startsWith('/admin/repairs') ? 'is-active' : '' %>" <%= currentPath.startsWith('/admin/repairs') ? 'aria-current="page"' : '' %>>报修记录</a>
+          <a href="/admin/auth-settings" class="nav-link <%= currentPath.startsWith('/admin/auth-settings') ? 'is-active' : '' %>" <%= currentPath.startsWith('/admin/auth-settings') ? 'aria-current="page"' : '' %>>认证设置</a>
           <a href="/logout" class="nav-pill">退出</a>
         <% } else { %>
           <a href="/login" class="nav-pill nav-pill-subtle">登录后台</a>

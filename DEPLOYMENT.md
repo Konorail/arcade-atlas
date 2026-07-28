@@ -1,6 +1,6 @@
 # Arcade Atlas 部署说明
 
-本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
+本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明首次安装、已安装检测、版本升级、后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
 
 ---
 
@@ -94,7 +94,7 @@ ALLOW_FIRST_LOGIN=false
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，例如：`github:123456,github:789012`
 - `ALLOW_FIRST_LOGIN`：只影响 GitHub OAuth 首次登录自动建号逻辑
-- Docker 部署推荐保持 `DATABASE_PATH=./data/arcade-atlas.sqlite`；容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
+- Docker 部署必须保持 `DATABASE_PATH` 位于仓库的 `./data/` 持久化目录下；推荐值为 `./data/arcade-atlas.sqlite`，容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
 
 `.env` 已被 `.gitignore` 忽略；`.env.example` 仅保留占位符，不包含真实密钥。
 
@@ -107,16 +107,17 @@ ALLOW_FIRST_LOGIN=false
 1. 检查当前系统是否为 Debian / Ubuntu
 2. 读取 `/etc/os-release`
 3. 读取 `VERSION_CODENAME`
-4. 检查 `docker` 是否已安装
-5. 检查 `docker compose version` 是否已可用
-6. 如果 Plugin 不可用，则动态添加 Docker 官方仓库
-7. 安装：
+4. 检查项目目录、Git 仓库、`.env`、数据库、当前安装版本
+5. 检查 `docker` 是否已安装
+6. 检查 `docker compose version` 是否已可用
+7. 如果 Plugin 不可用，则动态添加 Docker 官方仓库
+8. 安装：
    - `docker-ce`
    - `docker-ce-cli`
    - `containerd.io`
    - `docker-buildx-plugin`
    - `docker-compose-plugin`
-8. 安装完成后再次验证 `docker compose version`
+9. 安装完成后再次验证 `docker compose version`
 
 ### 1. 仓库地址生成规则
 
@@ -175,18 +176,43 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 
 ### 2. 脚本完成的工作
 
-- 检查系统环境
+- 检查系统环境与当前用户权限
+- 检测是否为首次安装或已安装环境
+- 输出 Git / Docker / Compose / `.env` / 数据库 / 版本检测结果
 - 检查或安装 Docker
 - 检查或安装 Docker Compose Plugin
-- 选择后台认证方式
-- 生成 `.env`
-- 在 `docker compose up -d` 前预检查认证配置
+- 首次安装时选择后台认证方式
+- 自动生成 `.env`，已有 `.env` 则保留现有配置并补齐缺失键
+- 已安装环境升级前自动备份 `.env`、数据库文件和 `data/`
+- 在启动前预检查认证配置
 - 执行 `docker compose config`
-- 执行 `docker compose up -d --build`
+- 执行 `docker compose build`
+- 停止旧的 `arcade-atlas` 容器
+- 执行 `docker compose run --rm arcade-atlas npm run migrate`
+- 执行 `docker compose up -d`
 - 执行健康检查：`/health`
-- 输出访问地址与登录方式
+- 输出版本、服务状态、访问地址与登录方式
 
-### 3. 持久化数据
+### 3. 升级确认与安全策略
+
+如果脚本检测到当前环境已经安装，会继续读取：
+
+- 当前安装版本
+- 当前代码版本
+- 最新版本
+
+当检测到新版本时，会提示是否升级；如果输入 `N`，脚本会直接退出，不会修改当前环境。
+
+升级过程中会遵循以下规则：
+
+- 不覆盖现有 `.env`
+- 不清空数据库文件
+- 不删除 `data/` 目录中的用户数据
+- 先备份，再拉取代码并完成构建预检查
+- 实际服务切换顺序固定为：停止旧服务 → 执行 Migration → 启动新服务 → 健康检查
+- 如果 Migration 失败，脚本会输出明确错误，并尝试恢复之前正在运行的服务，避免停在半升级状态
+
+### 4. 持久化数据
 
 `docker-compose.yml` 会把宿主机目录映射到容器：
 
@@ -208,7 +234,9 @@ DATABASE_PATH=./data/arcade-atlas.sqlite
 
 因此容器重建后数据库仍然保留，只要宿主机 `data` 目录没有删除即可。
 
-### 4. 健康检查
+如果你从旧的 Node 部署切换到 Docker，而 `.env` 中仍是旧的绝对路径（例如 `/opt/arcade-atlas/data/arcade-atlas.sqlite`），脚本会自动规范化为 `./data/arcade-atlas.sqlite`。如果 `DATABASE_PATH` 指向 `./data/` 之外的位置，脚本会直接停止并要求先迁移数据库，避免容器静默创建新的空数据库。
+
+### 5. 健康检查
 
 项目提供：
 
@@ -217,6 +245,14 @@ GET /health
 ```
 
 `docker-compose.yml` 已使用该地址配置健康检查。
+
+接口会返回：
+
+- 当前应用版本
+- API 状态
+- 数据库初始化状态
+- Redis 是否启用（当前仓库未启用）
+- 基础前端可用状态
 
 ---
 
@@ -238,11 +274,37 @@ npm ci
 npm run build
 ```
 
-### 3. 启动服务
+### 3. 执行 Migration
+
+在升级现有 Node 服务时，顺序必须是：
+
+1. 先确认升级
+2. 备份现有 `.env`、数据库和 `data/`
+3. 停止旧服务
+4. 执行 `npm run migrate`
+5. 重新启动服务
+6. 执行健康检查
+
+如果用户取消确认，脚本不会停止当前运行中的 Node 服务。
 
 ```bash
-npm run start
+npm run migrate
 ```
+
+### 4. 以 nohup 方式启动服务
+
+```bash
+mkdir -p .deploy
+nohup npm run start > .deploy/app.log 2>&1 &
+echo $! > .deploy/arcade-atlas.pid
+```
+
+相关运行文件：
+
+- PID 文件：`.deploy/arcade-atlas.pid`
+- 日志文件：`.deploy/app.log`
+
+停止旧的 Node 服务前，脚本会校验 PID 对应进程的命令行、工作目录或监听端口；如果无法确认该 PID 仍属于 Arcade Atlas，则不会执行 `kill`，而是提示用户手动处理。
 
 ---
 
@@ -253,13 +315,14 @@ npm run start
 1. 首页可以打开
 2. `/repairs` 可按分类看到机台并进入公开报修页
 3. `/health` 返回正常
-4. 首页最近 15 条报修记录与维修记录能自动刷新
-5. 公开报修页提交成功后会显示 Toast，失败时会显示错误提示
-6. `/login` 能看到正确的登录方式
-7. 用户名密码模式下可直接登录后台
-8. GitHub OAuth 模式下能正常跳转并回调
-9. `/admin/auth-settings` 可查看当前认证配置
-10. 数据库文件正确落在 `DATABASE_PATH` 所指位置
+4. `/health` 中的 `version`、`checks.database` 与 `database.initialized` 正常
+5. 首页最近 15 条报修记录与维修记录能自动刷新
+6. 公开报修页提交成功后会显示 Toast，失败时会显示错误提示
+7. `/login` 能看到正确的登录方式
+8. 用户名密码模式下可直接登录后台
+9. GitHub OAuth 模式下能正常跳转并回调
+10. `/admin/auth-settings` 可查看当前认证配置
+11. 数据库文件正确落在 `DATABASE_PATH` 所指位置
 
 ---
 
@@ -313,4 +376,5 @@ Node 部署可检查：
 
 ```bash
 cat .deploy/app.log
+cat .deploy/arcade-atlas.pid
 ```

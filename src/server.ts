@@ -2,7 +2,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { config } from './config';
-import { closeDatabase } from './db';
+import { closeDatabase, getDatabaseHealth } from './db';
 import {
   authenticateLocalUser,
   buildOAuthState,
@@ -108,6 +108,7 @@ function buildLoginViewData(overrides: { errorMessage?: string } = {}) {
 
 app.use((request, response, next) => {
   response.locals.appName = config.appName;
+  response.locals.currentPath = request.path;
   response.locals.currentUser = getCurrentUser(request);
   response.locals.providers = getEnabledProviders();
   response.locals.localLoginEnabled = isLocalLoginEnabled();
@@ -206,7 +207,19 @@ function respondError(request: Request, response: Response, error: unknown, stat
 }
 
 app.get('/health', (_request, response) => {
-  response.json({ status: 'ok', app: config.appName });
+  const database = getDatabaseHealth();
+  response.json({
+    status: database.initialized ? 'ok' : 'degraded',
+    app: config.appName,
+    version: config.appVersion,
+    checks: {
+      api: 'ok',
+      database: database.initialized ? 'ok' : 'error',
+      redis: 'not-configured',
+      frontend: 'ok',
+    },
+    database,
+  });
 });
 
 app.get('/', (_request, response) => {

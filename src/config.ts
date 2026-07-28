@@ -1,4 +1,5 @@
 import './env';
+import fs from 'node:fs';
 import path from 'node:path';
 
 export type AuthMode = 'local' | 'github' | 'both';
@@ -29,6 +30,7 @@ export type LocalAdminBootstrapConfig = {
 
 const rootDir = process.cwd();
 const trailingSlashesPattern = /\/+$/;
+const versionFilePath = path.join(rootDir, 'VERSION');
 
 function readOptionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -83,6 +85,19 @@ function resolveDatabasePath(value: string | undefined): string {
   }
 
   return path.isAbsolute(candidate) ? candidate : path.resolve(rootDir, candidate);
+}
+
+function readAppVersion(): string {
+  try {
+    const version = fs.readFileSync(versionFilePath, 'utf8').trim();
+    if (version) {
+      return version;
+    }
+  } catch {
+    // fall back to package.json version
+  }
+
+  return process.env.APP_VERSION?.trim() || '1.1.0';
 }
 
 export function parseAllowlist(value: string | undefined): Set<string> {
@@ -159,6 +174,7 @@ const localAdminBootstrap = parseLocalAdminBootstrap();
 
 export const config = {
   appName: process.env.APP_NAME?.trim() || 'Arcade Atlas',
+  appVersion: readAppVersion(),
   appUrl: parseAppUrl(process.env.APP_URL, 'http://localhost:3000'),
   port: parsePort(process.env.PORT, 3000),
   databasePath: resolveDatabasePath(process.env.DATABASE_PATH),

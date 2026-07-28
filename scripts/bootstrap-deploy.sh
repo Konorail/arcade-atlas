@@ -13,6 +13,25 @@ DOCKER_BIN=(docker)
 OS_ID=""
 OS_PRETTY_NAME=""
 VERSION_CODENAME=""
+INSTALL_STATE="fresh"
+PROJECT_DIR_STATUS="missing"
+GIT_REPO_STATUS="missing"
+DOCKER_STATUS="missing"
+DOCKER_COMPOSE_STATUS="missing"
+DOCKER_SERVICE_STATUS="unknown"
+ENV_FILE_STATUS="missing"
+DATABASE_STATUS="missing"
+CURRENT_INSTALL_VERSION="未安装"
+CURRENT_CODE_VERSION="未知"
+LATEST_VERSION="未知"
+BUILD_STATUS="未执行"
+MIGRATION_STATUS="未执行"
+SERVICE_STATUS="未启动"
+API_STATUS="未检查"
+REDIS_STATUS="未启用"
+CURRENT_USER_PERMISSION_STATUS="unknown"
+PREVIOUS_DOCKER_SERVICE_RUNNING=0
+PREVIOUS_NODE_SERVICE_RUNNING=0
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -81,9 +100,146 @@ require_command() {
   command -v "$command_name" >/dev/null 2>&1 || fail_step "缺少命令：$command_name"
 }
 
+path_is_within() {
+  python3 - "$1" "$2" <<'PYTHON_PATH_IS_WITHIN'
+import os
+import sys
+
+base_path = os.path.realpath(sys.argv[1])
+candidate_path = os.path.realpath(sys.argv[2])
+
+try:
+    print("1" if os.path.commonpath([base_path, candidate_path]) == base_path else "0")
+except ValueError:
+    print("0")
+PYTHON_PATH_IS_WITHIN
+}
+
+path_relative_to() {
+  python3 - "$1" "$2" <<'PYTHON_PATH_RELATIVE_TO'
+import os
+import sys
+
+base_path = os.path.realpath(sys.argv[1])
+candidate_path = os.path.realpath(sys.argv[2])
+print(os.path.relpath(candidate_path, base_path))
+PYTHON_PATH_RELATIVE_TO
+}
+
+read_version_from_directory() {
+  local directory="$1"
+  local version_file="$directory/VERSION"
+  local package_file="$directory/package.json"
+
+  if [[ -f "$version_file" ]]; then
+    awk 'NF {print; exit}' "$version_file"
+    return 0
+  fi
+
+  if [[ -f "$package_file" ]]; then
+    python3 - "$package_file" <<'PYTHON_READ_PACKAGE_VERSION'
+import json
+import sys
+
+with open(sys.argv[1], 'r', encoding='utf-8') as handle:
+    payload = json.load(handle)
+
+print(str(payload.get('version', '')).strip())
+PYTHON_READ_PACKAGE_VERSION
+    return 0
+  fi
+
+  return 1
+}
+
+read_version_from_git_ref() {
+  local directory="$1"
+  local ref="$2"
+
+  if git -C "$directory" cat-file -e "${ref}:VERSION" >/dev/null 2>&1; then
+    git -C "$directory" show "${ref}:VERSION" | awk 'NF {print; exit}'
+    return 0
+  fi
+
+  if git -C "$directory" cat-file -e "${ref}:package.json" >/dev/null 2>&1; then
+    git -C "$directory" show "${ref}:package.json" | python3 -c 'import json, sys; print(str(json.load(sys.stdin).get("version", "")).strip())'
+    return 0
+  fi
+
+  return 1
+}
+
+compare_versions() {
+  python3 - "$1" "$2" <<'PYTHON_COMPARE_VERSIONS'
+import re
+import sys
+
+def normalize(value: str) -> tuple[int, ...]:
+    candidate = value.strip()
+    if candidate.startswith("v"):
+        candidate = candidate[1:]
+    parts = [int(part) for part in re.findall(r"\d+", candidate)]
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+left = normalize(sys.argv[1])
+right = normalize(sys.argv[2])
+if left < right:
+    print(-1)
+elif left > right:
+    print(1)
+else:
+    print(0)
+PYTHON_COMPARE_VERSIONS
+}
+
+version_is_newer() {
+  [[ "$(compare_versions "$1" "$2")" == "1" ]]
+}
+
+detect_database_state() {
+  local database_path="$1"
+  python3 - "$database_path" <<'PYTHON_CHECK_DATABASE_STATE'
+import os
+import sqlite3
+import sys
+
+database_path = sys.argv[1]
+required_tables = {
+    "users",
+    "machine_types",
+    "machines",
+    "repair_records",
+    "maintenance_logs",
+    "admin_sessions",
+    "app_settings",
+}
+
+if not os.path.exists(database_path):
+    print("missing")
+    raise SystemExit(0)
+
+try:
+    connection = sqlite3.connect(database_path)
+    cursor = connection.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    tables = {row[0] for row in cursor.fetchall()}
+    print("initialized" if required_tables.issubset(tables) else "present")
+except sqlite3.DatabaseError:
+    print("invalid")
+finally:
+    try:
+        connection.close()
+    except Exception:
+        pass
+PYTHON_CHECK_DATABASE_STATE
+}
+
 ensure_sudo() {
   if [[ "$(id -u)" -eq 0 ]]; then
     SUDO=""
+    CURRENT_USER_PERMISSION_STATUS="root"
     return
   fi
 
@@ -91,6 +247,7 @@ ensure_sudo() {
   if ! sudo -v; then
     fail_step "当前用户没有可用的 sudo 权限，无法继续安装依赖或启动服务。"
   fi
+  CURRENT_USER_PERMISSION_STATUS="sudo"
   SUDO="sudo"
 }
 
@@ -140,6 +297,99 @@ detect_os() {
   [[ -n "$VERSION_CODENAME" ]] || fail_step "无法识别当前系统版本代号 VERSION_CODENAME。" "请检查 /etc/os-release 是否包含 VERSION_CODENAME。"
   log "检测到系统：$OS_PRETTY_NAME"
   log "系统代号：$VERSION_CODENAME"
+}
+
+detect_installation_state() {
+  local env_file database_value database_path branch_name
+
+  PROJECT_DIR_STATUS="missing"
+  GIT_REPO_STATUS="missing"
+  ENV_FILE_STATUS="missing"
+  DATABASE_STATUS="missing"
+  CURRENT_INSTALL_VERSION="未安装"
+  CURRENT_CODE_VERSION="未知"
+  LATEST_VERSION="未知"
+
+  if [[ -d "$TARGET_DIR" ]]; then
+    if [[ -n "$(find "$TARGET_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
+      PROJECT_DIR_STATUS="present"
+    else
+      PROJECT_DIR_STATUS="empty"
+    fi
+  fi
+
+  if [[ -d "$TARGET_DIR/.git" ]]; then
+    local status
+    GIT_REPO_STATUS="clean"
+    status="$(git -C "$TARGET_DIR" status --porcelain 2>/dev/null || true)"
+    if [[ -n "$status" ]]; then
+      GIT_REPO_STATUS="dirty"
+    fi
+    CURRENT_INSTALL_VERSION="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
+    CURRENT_CODE_VERSION="$CURRENT_INSTALL_VERSION"
+  elif [[ -d "$TARGET_DIR" ]]; then
+    GIT_REPO_STATUS="not-a-repo"
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    DOCKER_STATUS="installed"
+    if docker compose version >/dev/null 2>&1; then
+      DOCKER_COMPOSE_STATUS="installed"
+    else
+      DOCKER_COMPOSE_STATUS="missing"
+    fi
+
+    if docker info >/dev/null 2>&1; then
+      DOCKER_SERVICE_STATUS="running"
+    elif command -v systemctl >/dev/null 2>&1; then
+      DOCKER_SERVICE_STATUS="$($SUDO systemctl is-active docker 2>/dev/null || printf 'stopped')"
+    else
+      DOCKER_SERVICE_STATUS="stopped"
+    fi
+  else
+    DOCKER_STATUS="missing"
+    DOCKER_COMPOSE_STATUS="missing"
+    DOCKER_SERVICE_STATUS="missing"
+  fi
+
+  env_file="$TARGET_DIR/.env"
+  if [[ -f "$env_file" ]]; then
+    ENV_FILE_STATUS="present"
+    database_value="$(read_env_value "$env_file" "DATABASE_PATH")"
+  else
+    database_value=""
+  fi
+
+  database_path="$(resolve_env_path "$database_value" "./data/arcade-atlas.sqlite")"
+  DATABASE_STATUS="$(detect_database_state "$database_path")"
+
+  if [[ "$GIT_REPO_STATUS" != "missing" || "$ENV_FILE_STATUS" == "present" || "$DATABASE_STATUS" != "missing" || "$PROJECT_DIR_STATUS" == "present" ]]; then
+    INSTALL_STATE="installed"
+  else
+    INSTALL_STATE="fresh"
+  fi
+
+  if [[ "$GIT_REPO_STATUS" == "clean" || "$GIT_REPO_STATUS" == "dirty" ]]; then
+    branch_name="$(git -C "$TARGET_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'main')"
+    if git -C "$TARGET_DIR" fetch --quiet origin "$branch_name" >/dev/null 2>&1 || git -C "$TARGET_DIR" fetch --quiet origin main >/dev/null 2>&1; then
+      LATEST_VERSION="$(read_version_from_git_ref "$TARGET_DIR" "FETCH_HEAD" 2>/dev/null || printf '%s' "$CURRENT_INSTALL_VERSION")"
+    fi
+  fi
+}
+
+show_detection_summary() {
+  step '安装状态检测'
+  log "安装状态：$INSTALL_STATE"
+  log "项目目录：$TARGET_DIR ($PROJECT_DIR_STATUS)"
+  log "Git 仓库状态：$GIT_REPO_STATUS"
+  log "Docker：$DOCKER_STATUS"
+  log "Docker Compose：$DOCKER_COMPOSE_STATUS"
+  log "Docker 服务：$DOCKER_SERVICE_STATUS"
+  log ".env 配置：$ENV_FILE_STATUS"
+  log "数据库状态：$DATABASE_STATUS"
+  log "当前安装版本：$CURRENT_INSTALL_VERSION"
+  log "当前代码版本：$CURRENT_CODE_VERSION"
+  log "最新版本：$LATEST_VERSION"
 }
 
 parse_args() {
@@ -230,11 +480,7 @@ clone_or_update_repo() {
     if [[ -n "$status" ]]; then
       fail_step "项目目录存在未提交改动，已停止以避免覆盖用户文件：$TARGET_DIR"
     fi
-
-    confirm "将执行 git pull --ff-only 更新项目，这可能影响当前服务，是否继续？" || fail_step "用户取消更新项目。"
-    if ! git -C "$TARGET_DIR" pull --ff-only; then
-      fail_step "git pull 失败。" "请手动执行：cd $TARGET_DIR && git pull --ff-only"
-    fi
+    log "已保留现有仓库，等待后续升级流程确认。"
     return
   fi
 
@@ -246,6 +492,43 @@ clone_or_update_repo() {
   if ! git clone "$REPO_URL" "$TARGET_DIR"; then
     fail_step "克隆仓库失败。" "请检查网络或仓库地址：$REPO_URL"
   fi
+}
+
+backup_existing_installation() {
+  local env_file="$TARGET_DIR/.env"
+  local database_value database_path backup_dir timestamp
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  backup_dir="$TARGET_DIR/.deploy/backups/$timestamp"
+  mkdir -p "$backup_dir"
+
+  if [[ -f "$env_file" ]]; then
+    cp "$env_file" "$backup_dir/.env.backup"
+  fi
+
+  if [[ -d "$TARGET_DIR/data" ]]; then
+    cp -a "$TARGET_DIR/data" "$backup_dir/data"
+  fi
+
+  database_value="$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)"
+  database_path="$(resolve_env_path "$database_value" "./data/arcade-atlas.sqlite")"
+  if [[ -f "$database_path" ]]; then
+    cp "$database_path" "$backup_dir/$(basename "$database_path")"
+    [[ -f "${database_path}-wal" ]] && cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
+    [[ -f "${database_path}-shm" ]] && cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
+  fi
+
+  log "已创建升级备份：$backup_dir"
+}
+
+update_repo_to_latest() {
+  [[ -d "$TARGET_DIR/.git" ]] || fail_step "项目目录不是 Git 仓库，无法执行升级：$TARGET_DIR"
+  [[ "$GIT_REPO_STATUS" != "dirty" ]] || fail_step "项目目录存在未提交改动，已停止升级以保护用户文件。"
+
+  if ! git -C "$TARGET_DIR" pull --ff-only; then
+    fail_step "git pull 失败。" "请手动执行：cd $TARGET_DIR && git pull --ff-only"
+  fi
+
+  CURRENT_CODE_VERSION="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
 }
 
 append_missing_env_keys() {
@@ -309,6 +592,135 @@ if os.path.isabs(candidate):
 else:
     print(os.path.normpath(os.path.join(target_dir, candidate)))
 PYTHON_RESOLVE_PATH
+}
+
+get_process_cmdline() {
+  local pid="$1"
+
+  if [[ -r "/proc/$pid/cmdline" ]]; then
+    tr '\0' ' ' <"/proc/$pid/cmdline" | sed 's/[[:space:]]\+$//'
+    return 0
+  fi
+
+  ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//'
+}
+
+get_process_cwd() {
+  local pid="$1"
+  [[ -e "/proc/$pid/cwd" ]] || return 1
+  readlink -f "/proc/$pid/cwd"
+}
+
+process_listens_on_port() {
+  local pid="$1"
+  local port="$2"
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -Pan -p "$pid" -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | grep -Eq "[:.]${port}[[:space:]].*pid=${pid},"
+    return
+  fi
+
+  return 1
+}
+
+is_arcade_atlas_pid() {
+  local pid="$1"
+  local port="${2:-}"
+  local process_cmdline process_cwd cwd_matches=0
+
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  process_cmdline="$(get_process_cmdline "$pid" 2>/dev/null || true)"
+  process_cwd="$(get_process_cwd "$pid" 2>/dev/null || true)"
+
+  if [[ -n "$process_cwd" ]] && [[ "$process_cwd" == "$TARGET_DIR" ]]; then
+    cwd_matches=1
+  fi
+
+  if [[ "$cwd_matches" -eq 1 ]]; then
+    if [[ "$process_cmdline" == *"npm run start"* || "$process_cmdline" == *"node dist/server.js"* || "$process_cmdline" == *"/dist/server.js"* || "$process_cmdline" == *"arcade-atlas"* ]]; then
+      return 0
+    fi
+
+    if [[ -n "$port" ]] && process_listens_on_port "$pid" "$port"; then
+      return 0
+    fi
+  fi
+
+  if [[ -n "$port" ]] && [[ "$process_cmdline" == *"$TARGET_DIR"* ]] && process_listens_on_port "$pid" "$port"; then
+    return 0
+  fi
+
+  return 1
+}
+
+wait_for_pid_exit() {
+  local pid="$1"
+  local attempts="${2:-10}"
+  local _remaining=0
+
+  for ((_remaining = attempts; _remaining > 0; _remaining--)); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  ! kill -0 "$pid" >/dev/null 2>&1
+}
+
+wait_for_health_check() {
+  local port="$1"
+  local attempts="${2:-10}"
+  local url="http://127.0.0.1:${port}/health"
+  local response_body=""
+  local _remaining=0
+
+  for ((_remaining = attempts; _remaining > 0; _remaining--)); do
+    response_body="$(curl -fsS "$url" 2>/dev/null || true)"
+    if [[ -n "$response_body" ]]; then
+      printf '%s' "$response_body"
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+validate_database_path_for_mode() {
+  local env_file="$1"
+  local raw_database_path resolved_database_path data_dir relative_path normalized_database_path
+  local default_database_path="./data/arcade-atlas.sqlite"
+
+  raw_database_path="$(read_env_value "$env_file" "DATABASE_PATH")"
+  if [[ -z "$raw_database_path" ]]; then
+    set_env_value "$env_file" "DATABASE_PATH" "$default_database_path"
+    raw_database_path="$default_database_path"
+  fi
+
+  resolved_database_path="$(resolve_env_path "$raw_database_path" "$default_database_path")"
+  data_dir="$TARGET_DIR/data"
+
+  if [[ "$(path_is_within "$data_dir" "$resolved_database_path")" == "1" ]]; then
+    relative_path="$(path_relative_to "$data_dir" "$resolved_database_path")"
+    normalized_database_path="./data/${relative_path}"
+    if [[ "$raw_database_path" != "$normalized_database_path" ]]; then
+      set_env_value "$env_file" "DATABASE_PATH" "$normalized_database_path"
+      log "已将 DATABASE_PATH 规范化为 $normalized_database_path"
+    fi
+    return
+  fi
+
+  if [[ "$MODE" == "docker" ]]; then
+    fail_step "Docker 模式要求 DATABASE_PATH 指向 $TARGET_DIR/data 下的持久化目录，当前值不兼容：$raw_database_path" \
+      "为避免容器静默创建新的空数据库，脚本已停止。" \
+      "如果你正从 Node 部署切换到 Docker，请先将数据库迁移到 $TARGET_DIR/data/ 下，并把 DATABASE_PATH 设置为 ./data/<文件名> 后重试。"
+  fi
 }
 
 detect_github_oauth_user_state() {
@@ -632,10 +1044,12 @@ AUTH_MODE_MENU
 prepare_env_file() {
   local env_file="$TARGET_DIR/.env"
   local example_file="$TARGET_DIR/.env.example"
+  local env_created=0
   [[ -f "$example_file" ]] || fail_step "缺少环境变量模板：$example_file"
 
   if [[ ! -f "$env_file" ]]; then
     cp "$example_file" "$env_file"
+    env_created=1
     log "已创建 .env：$env_file"
   else
     log "检测到已有 .env，将保留现有配置并补全缺失项。"
@@ -643,12 +1057,8 @@ prepare_env_file() {
 
   append_missing_env_keys "$env_file" "$example_file"
 
-  local default_database_path app_url port database_path
-  if [[ "$MODE" == "docker" ]]; then
-    default_database_path="./data/arcade-atlas.sqlite"
-  else
-    default_database_path="$TARGET_DIR/data/arcade-atlas.sqlite"
-  fi
+  local default_database_path="./data/arcade-atlas.sqlite"
+  local app_url port database_path
 
   app_url="$(read_env_value "$env_file" "APP_URL")"
   if [[ -z "$app_url" || "$app_url" == "http://localhost:3000" ]]; then
@@ -672,7 +1082,17 @@ prepare_env_file() {
     set_env_value "$env_file" "DATABASE_PATH" "$default_database_path"
   fi
 
-  choose_auth_mode "$env_file"
+  if [[ "$env_created" -eq 1 ]]; then
+    choose_auth_mode "$env_file"
+  else
+    local auth_mode
+    auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
+    if [[ -z "$auth_mode" ]]; then
+      choose_auth_mode "$env_file"
+    else
+      log "检测到已有 AUTH_MODE=${auth_mode}，将保留现有认证配置。"
+    fi
+  fi
   mkdir -p "$TARGET_DIR/data"
 }
 
@@ -700,6 +1120,22 @@ check_port() {
   validate_port_value "$port"
 
   if port_in_use "$port"; then
+    if [[ "$MODE" == "docker" ]] && command -v docker >/dev/null 2>&1; then
+      if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'arcade-atlas'; then
+        log "端口 $port 当前由现有 arcade-atlas 容器占用，允许原位升级。"
+        return
+      fi
+    fi
+
+    if [[ "$MODE" == "node" ]] && [[ -f "$TARGET_DIR/.deploy/arcade-atlas.pid" ]]; then
+      local existing_pid
+      existing_pid="$(cat "$TARGET_DIR/.deploy/arcade-atlas.pid" 2>/dev/null || true)"
+      if [[ -n "$existing_pid" ]] && is_arcade_atlas_pid "$existing_pid" "$port"; then
+        log "端口 $port 当前由现有 Arcade Atlas Node 进程占用，允许原位升级。"
+        return
+      fi
+    fi
+
     warn "端口 $port 已被占用。"
     if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
       fail_step "端口冲突，请先释放端口或修改 .env 中的 PORT。" "建议执行：ss -ltnp | grep :$port"
@@ -826,6 +1262,7 @@ show_environment_summary() {
   log "项目目录：$TARGET_DIR"
   log "仓库地址：$REPO_URL"
   log "当前用户：$(id -un)"
+  log "用户权限：${CURRENT_USER_PERMISSION_STATUS:-unknown}"
   log "系统：$OS_PRETTY_NAME"
   log "系统代号：$VERSION_CODENAME"
   if command -v docker >/dev/null 2>&1; then
@@ -839,27 +1276,187 @@ show_environment_summary() {
   fi
 }
 
+run_database_migrations() {
+  step '执行数据库 Migration'
+  if [[ "$MODE" == "docker" ]]; then
+    (
+      cd "$TARGET_DIR"
+      "${DOCKER_BIN[@]}" compose run --rm arcade-atlas npm run migrate
+    )
+  else
+    (
+      cd "$TARGET_DIR"
+      npm run migrate
+    )
+  fi
+
+  MIGRATION_STATUS="已完成"
+}
+
+check_docker_container_status() {
+  local container_name='arcade-atlas'
+  local inspect_output
+
+  inspect_output="$("${DOCKER_BIN[@]}" inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null || true)"
+  [[ -n "$inspect_output" ]] || fail_step '未检测到 arcade-atlas 容器。' "请执行：cd $TARGET_DIR && docker compose ps"
+
+  case "$inspect_output" in
+    running\ healthy|running\ none)
+      log "Docker 容器状态正常：$inspect_output"
+      ;;
+    *)
+      fail_step 'Docker 容器状态异常。' "当前状态：$inspect_output" "请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200"
+      ;;
+  esac
+}
+
+stop_existing_docker_service() {
+  local running_services=""
+  running_services="$(
+    cd "$TARGET_DIR"
+    "${DOCKER_BIN[@]}" compose ps --status running --services 2>/dev/null || true
+  )"
+
+  if printf '%s\n' "$running_services" | grep -qx 'arcade-atlas'; then
+    log '检测到旧的 Docker 服务，正在停止 arcade-atlas 容器。'
+    (
+      cd "$TARGET_DIR"
+      "${DOCKER_BIN[@]}" compose stop arcade-atlas
+    ) || fail_step '停止旧的 Docker 服务失败。' "请执行：cd $TARGET_DIR && docker compose stop arcade-atlas"
+    PREVIOUS_DOCKER_SERVICE_RUNNING=1
+  else
+    PREVIOUS_DOCKER_SERVICE_RUNNING=0
+  fi
+}
+
+restore_docker_service_after_failed_migration() {
+  local port="$1"
+
+  [[ "$PREVIOUS_DOCKER_SERVICE_RUNNING" -eq 1 ]] || return 1
+
+  warn '数据库 Migration 失败，正在尝试恢复之前的 Docker 服务。'
+  if ! (
+    cd "$TARGET_DIR"
+    "${DOCKER_BIN[@]}" compose start arcade-atlas
+  ); then
+    warn '恢复旧的 Docker 服务失败。'
+    return 1
+  fi
+
+  if wait_for_health_check "$port" 10 >/dev/null; then
+    log '已恢复之前的 Docker 服务。'
+    return 0
+  fi
+
+  warn '旧的 Docker 服务恢复后未通过健康检查。'
+  return 1
+}
+
 run_docker_deploy() {
   local env_file="$TARGET_DIR/.env"
   local port
   port="$(read_env_value "$env_file" "PORT")"
   validate_auth_configuration_before_start "$env_file"
 
-  confirm '将通过 docker compose 构建并启动服务，这可能重建现有容器，是否继续？' || fail_step '用户取消启动 Docker 服务。'
+  confirm '将按“停止旧服务 → 数据库 Migration → 启动新服务”的顺序执行 Docker 升级，是否继续？' || fail_step '用户取消启动 Docker 服务。'
 
   (
     cd "$TARGET_DIR"
     if ! "${DOCKER_BIN[@]}" compose config >/dev/null; then
       fail_step 'docker compose config 检查失败。' "请执行：cd $TARGET_DIR && docker compose config"
     fi
-    if ! "${DOCKER_BIN[@]}" compose up -d --build; then
+    if ! "${DOCKER_BIN[@]}" compose build; then
+      fail_step 'Docker 镜像构建失败。' "请执行：cd $TARGET_DIR && docker compose build"
+    fi
+  )
+  BUILD_STATUS="已通过"
+
+  stop_existing_docker_service
+
+  if ! run_database_migrations; then
+    MIGRATION_STATUS="失败"
+    restore_docker_service_after_failed_migration "$port" || true
+    fail_step '数据库 Migration 执行失败。' \
+      '脚本已停止启动新容器，以避免留下不可用状态。' \
+      "请执行：cd $TARGET_DIR && docker compose run --rm arcade-atlas npm run migrate" \
+      "如需检查现有容器状态，请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200"
+  fi
+
+  (
+    cd "$TARGET_DIR"
+    if ! "${DOCKER_BIN[@]}" compose up -d; then
       fail_step 'Docker Compose 启动失败。' \
         "请执行：cd $TARGET_DIR && docker compose ps" \
         "请执行：cd $TARGET_DIR && docker compose logs --tail=200"
     fi
   )
 
+  check_docker_container_status
   run_health_check "$port"
+}
+
+stop_existing_node_service() {
+  local pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
+  local env_file="$TARGET_DIR/.env"
+  local existing_pid=""
+  local port=""
+
+  [[ -f "$pid_file" ]] || return
+  existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+  port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
+  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+    if ! is_arcade_atlas_pid "$existing_pid" "$port"; then
+      local process_cmdline process_cwd
+      process_cmdline="$(get_process_cmdline "$existing_pid" 2>/dev/null || true)"
+      process_cwd="$(get_process_cwd "$existing_pid" 2>/dev/null || true)"
+      fail_step "PID 文件中的进程无法确认属于 Arcade Atlas，已拒绝执行 kill：$existing_pid" \
+        "检测到的工作目录：${process_cwd:-unknown}" \
+        "检测到的命令行：${process_cmdline:-unknown}" \
+        "请手动确认该 PID 后再处理，避免因 PID 复用误杀其他进程。"
+    fi
+
+    log "检测到旧的 Node 服务进程，正在停止：$existing_pid"
+    PREVIOUS_NODE_SERVICE_RUNNING=1
+    kill "$existing_pid" >/dev/null 2>&1 || fail_step "停止旧的 Node 服务失败：$existing_pid"
+    if ! wait_for_pid_exit "$existing_pid" 10; then
+      warn "Node 服务进程 $existing_pid 在 10 秒内未退出，尝试强制结束。"
+      kill -KILL "$existing_pid" >/dev/null 2>&1 || fail_step "强制结束旧的 Node 服务失败：$existing_pid"
+      wait_for_pid_exit "$existing_pid" 5 || fail_step "旧的 Node 服务仍未退出：$existing_pid"
+    fi
+  else
+    PREVIOUS_NODE_SERVICE_RUNNING=0
+  fi
+  rm -f "$pid_file"
+}
+
+start_node_service() {
+  local pid_file="$1"
+  (
+    cd "$TARGET_DIR"
+    nohup npm run start >"$TARGET_DIR/.deploy/app.log" 2>&1 &
+    echo $! >"$pid_file"
+  )
+}
+
+restore_node_service_after_failed_migration() {
+  local port="$1"
+  local pid_file="$2"
+
+  [[ "$PREVIOUS_NODE_SERVICE_RUNNING" -eq 1 ]] || return 1
+
+  warn '数据库 Migration 失败，正在尝试恢复之前的 Node 服务。'
+  if ! start_node_service "$pid_file"; then
+    warn '重新启动旧的 Node 服务失败。'
+    return 1
+  fi
+
+  if wait_for_health_check "$port" 10 >/dev/null; then
+    log '已恢复之前的 Node 服务。'
+    return 0
+  fi
+
+  warn '旧的 Node 服务恢复后未通过健康检查。'
+  return 1
 }
 
 run_node_deploy() {
@@ -868,23 +1465,29 @@ run_node_deploy() {
   port="$(read_env_value "$env_file" "PORT")"
   pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
   mkdir -p "$TARGET_DIR/.deploy"
+  validate_auth_configuration_before_start "$env_file"
 
   (
     cd "$TARGET_DIR"
     npm ci
     npm run build
   )
+  BUILD_STATUS="已通过"
 
-  if [[ -f "$pid_file" ]]; then
-    fail_step '检测到已有 Node 进程 PID 文件。' "请确认旧进程已停止，然后删除：$pid_file"
+  confirm "将按“停止旧服务 → 数据库 Migration → nohup 启动新服务”的顺序执行 Node 升级，这会占用端口 $port，是否继续？" || fail_step '用户取消启动 Node 服务。'
+
+  stop_existing_node_service
+
+  if ! run_database_migrations; then
+    MIGRATION_STATUS="失败"
+    restore_node_service_after_failed_migration "$port" "$pid_file" || true
+    fail_step '数据库 Migration 执行失败。' \
+      '脚本已停止启动新服务，以避免留下不可用状态。' \
+      "请执行：cd $TARGET_DIR && npm run migrate" \
+      "如需检查 Node 日志，请查看：$TARGET_DIR/.deploy/app.log"
   fi
 
-  confirm "将以 nohup 方式启动 Node 服务，这会占用端口 $port，是否继续？" || fail_step '用户取消启动 Node 服务。'
-  (
-    cd "$TARGET_DIR"
-    nohup npm run start >"$TARGET_DIR/.deploy/app.log" 2>&1 &
-    echo $! >"$pid_file"
-  )
+  start_node_service "$pid_file" || fail_step 'Node 服务启动失败。' "请检查日志：$TARGET_DIR/.deploy/app.log"
 
   run_health_check "$port"
 }
@@ -892,13 +1495,19 @@ run_node_deploy() {
 run_health_check() {
   local port="$1"
   local url="http://127.0.0.1:${port}/health"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS -o /dev/null "$url"; then
-      log "健康检查通过：$url"
-      return
+  local response_body=""
+  response_body="$(wait_for_health_check "$port" 10 || true)"
+  if [[ -n "$response_body" ]]; then
+    log "健康检查通过：$url"
+    API_STATUS="正常"
+    if printf '%s' "$response_body" | grep -q '"initialized"[[:space:]]*:[[:space:]]*true'; then
+      DATABASE_STATUS="正常"
+    else
+      DATABASE_STATUS="异常"
     fi
-    sleep 2
-  done
+    SERVICE_STATUS="正常"
+    return
+  fi
 
   fail_step '健康检查失败。' \
     "失败地址：$url" \
@@ -908,12 +1517,20 @@ run_health_check() {
 
 show_final_summary() {
   local env_file="$TARGET_DIR/.env"
-  local app_url auth_mode login_url callback_url username allowlist
+  local app_url auth_mode login_url callback_url username allowlist deployed_version
   app_url="$(read_env_value "$env_file" "APP_URL")"
   auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
   login_url="${app_url%/}/login"
+  deployed_version="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
 
-  step '部署完成摘要'
+  step 'Arcade Atlas 部署完成'
+  log "版本：$deployed_version"
+  log "服务状态：$SERVICE_STATUS"
+  log "API：$API_STATUS"
+  log "数据库：$DATABASE_STATUS"
+  log "Redis：$REDIS_STATUS"
+  log "前端构建：$BUILD_STATUS"
+  log "Migration：$MIGRATION_STATUS"
   log "访问地址：$app_url"
   log "后台登录地址：$login_url"
 
@@ -937,19 +1554,61 @@ show_final_summary() {
       log '  - GitHub Client Secret: 你在 GitHub OAuth App 中生成的私密密钥'
       log "允许登录的 GitHub 用户：$allowlist"
       ;;
+    both)
+      callback_url="${app_url%/}/auth/github/callback"
+      username="$(read_env_value "$env_file" "LOCAL_ADMIN_USERNAME")"
+      allowlist="$(read_env_value "$env_file" "OAUTH_ALLOWLIST")"
+      log '后台登录方式：用户名 + 密码 + GitHub OAuth'
+      log "后台用户名：$username"
+      log "GitHub OAuth 回调地址：$callback_url"
+      log "允许登录的 GitHub 用户：$allowlist"
+      ;;
   esac
 
   log "更多部署说明见：$TARGET_DIR/DEPLOYMENT.md"
+}
+
+handle_existing_installation() {
+  if [[ "$INSTALL_STATE" != "installed" ]]; then
+    return
+  fi
+
+  [[ "$GIT_REPO_STATUS" != "not-a-repo" ]] || fail_step "检测到已有项目目录，但目录不是 Git 仓库：$TARGET_DIR" "请先备份自定义文件后重新部署，或手动转换为 Git 仓库。"
+
+  if [[ "$LATEST_VERSION" != "未知" ]] && [[ "$CURRENT_INSTALL_VERSION" != "未安装" ]] && version_is_newer "$LATEST_VERSION" "$CURRENT_INSTALL_VERSION"; then
+    printf '当前版本：%s\n最新版本：%s\n' "$CURRENT_INSTALL_VERSION" "$LATEST_VERSION"
+    confirm '检测到新版本，是否升级？' || {
+      log '已取消升级，当前版本保持不变。'
+      exit 0
+    }
+  else
+    log '当前已安装版本已是最新，继续执行安全重建与健康检查。'
+  fi
+
+  backup_existing_installation
+  if [[ "$SKIP_GIT_UPDATE" -eq 0 ]]; then
+    step '拉取最新代码'
+    update_repo_to_latest
+  else
+    log '已启用 --skip-git-update，升级流程将使用当前本地代码。'
+  fi
 }
 
 main() {
   parse_args "$@"
   step '检查系统环境'
   detect_os
+  ensure_sudo
   ensure_base_commands
+  detect_installation_state
+  show_detection_summary
 
   step '准备项目代码'
-  clone_or_update_repo
+  if [[ "$INSTALL_STATE" == "installed" ]]; then
+    handle_existing_installation
+  else
+    clone_or_update_repo
+  fi
   show_environment_summary
 
   if [[ "$MODE" == "docker" ]]; then
@@ -962,6 +1621,7 @@ main() {
 
   step '生成并检查 .env 配置'
   prepare_env_file
+  validate_database_path_for_mode "$TARGET_DIR/.env"
   check_port
 
   if [[ "$MODE" == "docker" ]]; then
