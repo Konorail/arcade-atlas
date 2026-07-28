@@ -1,4 +1,7 @@
     </main>
+    <% if (flashMessage) { %>
+      <div data-flash-toast="<%= flashMessage.text %>" data-flash-toast-type="<%= flashMessage.type %>"></div>
+    <% } %>
     <script src="/app.js"></script>
   </body>
 </html>

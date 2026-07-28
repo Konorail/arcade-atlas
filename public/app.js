@@ -98,7 +98,7 @@
       PENDING: '🔴 报修中',
       PROCESSING: '🟡 处理中',
       RESOLVED: '🟢 已解决',
-      UNRESOLVED: '⚫ 未解决',
+      UNRESOLVED: '⚪ 历史未解决',
     }[status] || escapeHtml(status);
   }
 
@@ -160,7 +160,6 @@
             </div>
             <span class="muted">${escapeHtml(log.operator_name || '')}</span>
             <p>${escapeHtml(log.content)}</p>
-            <span class="muted">维修说明：${escapeHtml(log.result)}</span>
           </article>
         `,
       )
@@ -179,7 +178,6 @@
             <strong>${escapeHtml(log.operator_name || '')}</strong>
             <span>${escapeHtml(formatDateTime(log.created_at))}</span>
             <p>${escapeHtml(log.content)}</p>
-            <span>结果：${escapeHtml(log.result)}</span>
           </article>
         `,
       )
@@ -299,26 +297,100 @@
     }, POLL_INTERVAL_MS);
   }
 
+  function createConfirmDialog() {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-dialog-backdrop';
+    overlay.innerHTML = `
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+        <h2 id="confirm-dialog-title">请确认操作</h2>
+        <p class="confirm-dialog-message"></p>
+        <div class="actions">
+          <button type="button" class="button danger" data-confirm-accept>确认</button>
+          <button type="button" class="button secondary" data-confirm-cancel>取消</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  function showConfirmDialog(message, confirmText, cancelText) {
+    const dialog = document.querySelector('.confirm-dialog-backdrop') || createConfirmDialog();
+    const messageNode = dialog.querySelector('.confirm-dialog-message');
+    const acceptButton = dialog.querySelector('[data-confirm-accept]');
+    const cancelButton = dialog.querySelector('[data-confirm-cancel]');
+
+    if (!messageNode || !acceptButton || !cancelButton) {
+      return Promise.resolve(window.confirm(message));
+    }
+
+    messageNode.textContent = message || '请确认操作。';
+    acceptButton.textContent = confirmText || '确认';
+    cancelButton.textContent = cancelText || '取消';
+    dialog.classList.add('is-visible');
+
+    return new Promise((resolve) => {
+      const cleanup = (result) => {
+        dialog.classList.remove('is-visible');
+        acceptButton.removeEventListener('click', onAccept);
+        cancelButton.removeEventListener('click', onCancel);
+        dialog.removeEventListener('click', onBackdropClick);
+        document.removeEventListener('keydown', onKeyDown);
+        resolve(result);
+      };
+
+      const onAccept = () => cleanup(true);
+      const onCancel = () => cleanup(false);
+      const onBackdropClick = (event) => {
+        if (event.target === dialog) {
+          cleanup(false);
+        }
+      };
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          cleanup(false);
+        }
+      };
+
+      acceptButton.addEventListener('click', onAccept);
+      cancelButton.addEventListener('click', onCancel);
+      dialog.addEventListener('click', onBackdropClick);
+      document.addEventListener('keydown', onKeyDown);
+      acceptButton.focus();
+    });
+  }
+
   function setupStandardForms() {
     document.querySelectorAll('form').forEach((form) => {
       if (form.hasAttribute('data-repair-form')) {
         return;
       }
 
-      form.addEventListener('submit', (event) => {
-        const message = form.getAttribute('data-confirm');
-        if (message && !window.confirm(message)) {
-          event.preventDefault();
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        if (!form.checkValidity()) {
+          form.reportValidity();
           return;
         }
 
-        if (!form.checkValidity()) {
-          return;
+        const message = form.getAttribute('data-confirm');
+        if (message) {
+          const confirmed = await showConfirmDialog(
+            message,
+            form.getAttribute('data-confirm-confirm-text') || '确认',
+            form.getAttribute('data-confirm-cancel-text') || '取消',
+          );
+
+          if (!confirmed) {
+            return;
+          }
         }
 
         form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach((button) => {
           setButtonLoading(button, true);
         });
+        form.submit();
       });
     });
   }

@@ -9,12 +9,14 @@
   - GitHub OAuth
 - 安装脚本会明确要求你二选一完成首次部署
 - 安装脚本支持首次安装、部署状态检测、版本检测、安全升级、重置部署、完全清理与健康检查
+- 空数据库首次使用 GitHub OAuth 登录时，首个用户会自动成为管理员，后续新 OAuth 用户默认为普通用户
+- 历史数据库补齐 RBAC 角色时遵循最小权限原则，不会批量把所有历史用户提升为管理员
 - 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
-- 首页可直接进入公开机台列表，按分类选择机台后提交报修
+- 首页可直接进入公开机台列表，按机台类型选择机台后提交报修
 - 访客扫码进入机台详情页后，无需登录即可查看最近记录并以 Toast 反馈提交结果
 - 首页会自动轮询最近 15 条报修记录与维修记录
-- 后台支持报修状态流转、维修日志追加、机台历史追踪
+- 后台支持报修状态流转、维修日志追加、机台/报修/维护记录软删除与机台历史追踪
 - 服务端严格决定 `machine_id`、`repair_record_id`、`operator_id` 与时间字段
 
 ## 技术栈
@@ -152,6 +154,9 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许访问后台的 GitHub 用户列表，格式为 `github:用户ID`
 - `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的 GitHub 用户首次自动创建
+  - 空数据库下的首个 OAuth 用户会自动创建为 `admin`
+  - 后续自动创建的 OAuth 用户默认为 `user`
+  - 历史数据库迁移只会在缺少管理员时为最早用户补一个管理员，不会批量提权
 
 ## 版本与升级
 
@@ -219,6 +224,8 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `GET /admin/machine-types`
 - `GET /admin/machines`
 - `GET /admin/repairs`
+- `GET /admin/maintenance-logs`
+- `GET /admin/maintenance-logs/:id`
 - `GET /api/admin/machine-types`
 - `POST /api/admin/machine-types`
 - `PATCH /api/admin/machine-types/:id`
@@ -226,12 +233,17 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `POST /api/admin/machines`
 - `GET /api/admin/machines/:id`
 - `PATCH /api/admin/machines/:id`
+- `DELETE /api/admin/machines/:id`
 - `POST /api/admin/machines/:id/regenerate-qr`
 - `GET /api/admin/repairs`
 - `GET /api/admin/repairs/:id`
 - `PATCH /api/admin/repairs/:id/status`
+- `DELETE /api/admin/repairs/:id`
 - `GET /api/admin/repairs/:id/maintenance-logs`
 - `POST /api/admin/repairs/:id/maintenance-logs`
+- `GET /api/admin/maintenance-logs`
+- `GET /api/admin/maintenance-logs/:id`
+- `DELETE /api/admin/maintenance-logs/:id`
 
 ## 部署说明
 

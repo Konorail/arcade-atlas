@@ -5,7 +5,6 @@
     <dl class="details-grid">
       <div><dt>机台类型</dt><dd><%= machineType.name %></dd></div>
       <div><dt>机台编号</dt><dd><%= machine.machine_code %></dd></div>
-      <div><dt>位置</dt><dd><%= machine.location %></dd></div>
       <div><dt>当前状态</dt><dd><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></dd></div>
       <% if (machine.description) { %>
         <div class="full"><dt>描述</dt><dd><%= machine.description %></dd></div>
@@ -23,9 +22,6 @@
       </label>
       <button class="button" type="submit" data-loading-text="提交中...">提交报修</button>
     </form>
-    <% if (formMessage) { %>
-      <div data-flash-toast="<%= formMessage.text %>" data-flash-toast-type="<%= formMessage.type %>"></div>
-    <% } %>
   </article>
 </section>
 
@@ -58,7 +54,6 @@
             <strong><%= log.operator_name %></strong>
             <span><%= formatDateTime(log.created_at) %></span>
             <p><%= log.content %></p>
-            <span>结果：<%= log.result %></span>
           </article>
         <% }) %>
       <% } %>

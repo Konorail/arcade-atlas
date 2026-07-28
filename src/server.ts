@@ -22,6 +22,9 @@ import {
   createMaintenanceLog,
   createQrCodeBuffer,
   createRepairForMachineToken,
+  deleteMachine,
+  deleteMaintenanceLog,
+  deleteRepair,
   ensureBootstrapAuthConfig,
   getAuthSettingsView,
   getEnabledProviders,
@@ -30,9 +33,11 @@ import {
   getMachineHistory,
   getMachineType,
   getMachineViewByToken,
+  getMaintenanceLog,
   getRepair,
   getStatusOptions,
   isLocalLoginEnabled,
+  listMaintenanceLogs,
   listPublicMachines,
   listRecentMaintenanceLogs,
   listRecentRepairs,
@@ -63,7 +68,7 @@ const repairStatusLabels = {
   PENDING: '🔴 报修中',
   PROCESSING: '🟡 处理中',
   RESOLVED: '🟢 已解决',
-  UNRESOLVED: '⚫ 未解决',
+  UNRESOLVED: '⚪ 历史未解决',
 } as const;
 const machineTypeStatusLabels = {
   active: '启用',
@@ -72,6 +77,11 @@ const machineTypeStatusLabels = {
 const userStatusLabels = {
   active: '启用',
   disabled: '停用',
+} as const;
+const userRoleLabels = {
+  user: '普通用户',
+  repair: '维修人员',
+  admin: '管理员',
 } as const;
 const authEntryRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -114,11 +124,19 @@ app.use((request, response, next) => {
   response.locals.localLoginEnabled = isLocalLoginEnabled();
   response.locals.authMode = getEffectiveAuthMode();
   response.locals.statuses = getStatusOptions();
+  response.locals.flashMessage =
+    typeof request.query.message === 'string' && request.query.message.trim()
+      ? {
+          type: request.query.status === 'error' ? 'error' : 'success',
+          text: request.query.message.trim(),
+        }
+      : null;
   response.locals.ui = {
     machineStatusLabels,
     repairStatusLabels,
     machineTypeStatusLabels,
     userStatusLabels,
+    userRoleLabels,
     machineStatusClass: (status: keyof typeof machineStatusLabels) => `status-badge machine-status machine-status-${status}`,
     repairStatusClass: (status: keyof typeof repairStatusLabels) => `status-badge repair-status repair-status-${status.toLowerCase()}`,
   };
@@ -132,21 +150,40 @@ function asyncHandler(handler: (request: Request, response: Response, next: Next
   };
 }
 
-function requireAdmin(request: Request, response: Response, next: NextFunction): void {
-  const user = getCurrentUser(request);
-  if (!user) {
-    if (wantsJson(request)) {
-      response.status(401).json({ error: 'Authentication required.' });
-      return;
-    }
-
-    response.redirect('/login');
+function rejectUnauthorized(request: Request, response: Response, message: string): void {
+  if (wantsJson(request)) {
+    response.status(403).json({ error: message });
     return;
   }
 
-  response.locals.currentUser = user;
-  next();
+  response.status(403).render('error', { message });
 }
+
+function requireRole(roles: readonly string[], message: string) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    const user = getCurrentUser(request);
+    if (!user) {
+      if (wantsJson(request)) {
+        response.status(401).json({ error: 'Authentication required.' });
+        return;
+      }
+
+      response.redirect('/login');
+      return;
+    }
+
+    if (!roles.includes(user.role)) {
+      rejectUnauthorized(request, response, message);
+      return;
+    }
+
+    response.locals.currentUser = user;
+    next();
+  };
+}
+
+const requireAdmin = requireRole(['admin'], '需要管理员权限。');
+const requireRepairOrAdmin = requireRole(['repair', 'admin'], '需要维修人员或管理员权限。');
 
 function parseId(value: string): number {
   const id = Number(value);
@@ -187,7 +224,7 @@ function formatDateTime(value: string): string {
 function groupMachinesByCategory() {
   const groups = new Map<string, ReturnType<typeof listPublicMachines>>();
   for (const machine of listPublicMachines()) {
-    const category = machine.category?.trim() || '未分类';
+    const category = machine.type_name?.trim() || '未命名类型';
     const items = groups.get(category) ?? [];
     items.push(machine);
     groups.set(category, items);
@@ -204,6 +241,11 @@ function respondError(request: Request, response: Response, error: unknown, stat
   }
 
   response.status(statusCode).render('error', { message });
+}
+
+function redirectWithMessage(response: Response, targetPath: string, message: string, type: 'success' | 'error' = 'success'): void {
+  const separator = targetPath.includes('?') ? '&' : '?';
+  response.redirect(`${targetPath}${separator}status=${encodeURIComponent(type)}&message=${encodeURIComponent(message)}`);
 }
 
 app.get('/health', (_request, response) => {
@@ -300,13 +342,6 @@ app.get(
 
     response.render('public-machine', {
       ...view,
-      formMessage:
-        typeof request.query.message === 'string' && request.query.message.trim()
-          ? {
-              type: request.query.status === 'error' ? 'error' : 'success',
-              text: request.query.message.trim(),
-            }
-          : null,
     });
   }),
 );
@@ -325,11 +360,12 @@ app.post(
   }),
 );
 
-app.get('/admin', requireAdmin, (_request, response) => {
+app.get('/admin', requireRepairOrAdmin, (_request, response) => {
   response.render('admin-dashboard', {
     machineTypes: listMachineTypes().length,
     machines: listMachines().length,
     repairs: listRepairs().length,
+    maintenanceLogs: listMaintenanceLogs().length,
     authMode: getEffectiveAuthMode(),
   });
 });
@@ -440,6 +476,19 @@ app.post('/admin/machines/:id', requireAdmin, (request, response) => {
   response.redirect(`/admin/machines/${routeParam(request.params.id, 'id')}`);
 });
 
+app.post('/admin/machines/:id/delete', requireAdmin, (request, response) => {
+  try {
+    const result = deleteMachine(parseId(routeParam(request.params.id, 'id')));
+    const message =
+      result.relatedRepairs > 0 || result.relatedMaintenanceLogs > 0
+        ? '机台已删除，并已保留关联报修与维护历史记录。'
+        : '机台已删除。';
+    redirectWithMessage(response, '/admin/machines', message);
+  } catch (error) {
+    redirectWithMessage(response, '/admin/machines', error instanceof Error ? error.message : '删除机台失败。', 'error');
+  }
+});
+
 app.post('/admin/machines/:id/regenerate-qr', requireAdmin, (request, response) => {
   regenerateMachineQrToken(parseId(routeParam(request.params.id, 'id')));
   response.redirect(`/admin/machines/${routeParam(request.params.id, 'id')}`);
@@ -458,7 +507,7 @@ app.get('/admin/machines/:id/qr.png', requireAdmin, asyncHandler(async (request,
   response.send(buffer);
 }));
 
-app.get('/admin/repairs', requireAdmin, (request, response) => {
+app.get('/admin/repairs', requireRepairOrAdmin, (request, response) => {
   const machineId = typeof request.query.machine_id === 'string' && request.query.machine_id ? Number(request.query.machine_id) : undefined;
   response.render('repairs', {
     repairs: listRepairs({
@@ -473,7 +522,7 @@ app.get('/admin/repairs', requireAdmin, (request, response) => {
   });
 });
 
-app.get('/admin/repairs/:id', requireAdmin, (request, response) => {
+app.get('/admin/repairs/:id', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).render('error', { message: 'Repair record not found.' });
@@ -487,12 +536,25 @@ app.get('/admin/repairs/:id', requireAdmin, (request, response) => {
   });
 });
 
-app.post('/admin/repairs/:id/status', requireAdmin, (request, response) => {
+app.post('/admin/repairs/:id/status', requireRepairOrAdmin, (request, response) => {
   updateRepairStatus(parseId(routeParam(request.params.id, 'id')), String(request.body.status || ''));
   response.redirect(`/admin/repairs/${routeParam(request.params.id, 'id')}`);
 });
 
-app.post('/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.post('/admin/repairs/:id/delete', requireAdmin, (request, response) => {
+  try {
+    const result = deleteRepair(parseId(routeParam(request.params.id, 'id')));
+    const message =
+      result.maintenanceLogs > 0
+        ? '报修记录已删除，关联维护记录已从管理列表隐藏。'
+        : '报修记录已删除。';
+    redirectWithMessage(response, '/admin/repairs', message);
+  } catch (error) {
+    redirectWithMessage(response, '/admin/repairs', error instanceof Error ? error.message : '删除报修记录失败。', 'error');
+  }
+});
+
+app.post('/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const user = getCurrentUser(request);
   if (!user) {
     response.redirect('/login');
@@ -501,6 +563,33 @@ app.post('/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response
 
   createMaintenanceLog(parseId(routeParam(request.params.id, 'id')), user.id, request.body as Record<string, unknown>);
   response.redirect(`/admin/repairs/${routeParam(request.params.id, 'id')}`);
+});
+
+app.get('/admin/maintenance-logs', requireRepairOrAdmin, (request, response) => {
+  response.render('maintenance-logs', {
+    maintenanceLogs: listMaintenanceLogs(),
+  });
+});
+
+app.get('/admin/maintenance-logs/:id', requireRepairOrAdmin, (request, response) => {
+  const maintenanceLog = getMaintenanceLog(parseId(routeParam(request.params.id, 'id')));
+  if (!maintenanceLog) {
+    response.status(404).render('error', { message: 'Maintenance log not found.' });
+    return;
+  }
+
+  response.render('maintenance-log-detail', {
+    maintenanceLog,
+  });
+});
+
+app.post('/admin/maintenance-logs/:id/delete', requireAdmin, (request, response) => {
+  try {
+    deleteMaintenanceLog(parseId(routeParam(request.params.id, 'id')));
+    redirectWithMessage(response, '/admin/maintenance-logs', '维护记录已删除。');
+  } catch (error) {
+    redirectWithMessage(response, '/admin/maintenance-logs', error instanceof Error ? error.message : '删除维护记录失败。', 'error');
+  }
 });
 
 app.get('/api/machines/:token', (request, response) => {
@@ -599,6 +688,14 @@ app.patch('/api/admin/machines/:id', requireAdmin, (request, response) => {
   }
 });
 
+app.delete('/api/admin/machines/:id', requireAdmin, (request, response) => {
+  try {
+    response.json({ result: deleteMachine(parseId(routeParam(request.params.id, 'id'))) });
+  } catch (error) {
+    respondError(request, response, error, 400);
+  }
+});
+
 app.post('/api/admin/machines/:id/regenerate-qr', requireAdmin, (request, response) => {
   try {
     response.json({ machine: regenerateMachineQrToken(parseId(routeParam(request.params.id, 'id'))) });
@@ -607,7 +704,7 @@ app.post('/api/admin/machines/:id/regenerate-qr', requireAdmin, (request, respon
   }
 });
 
-app.get('/api/admin/repairs', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs', requireRepairOrAdmin, (request, response) => {
   const machineId = typeof request.query.machine_id === 'string' && request.query.machine_id ? Number(request.query.machine_id) : undefined;
   response.json({
     items: listRepairs({
@@ -620,7 +717,7 @@ app.get('/api/admin/repairs', requireAdmin, (request, response) => {
   });
 });
 
-app.get('/api/admin/repairs/:id', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs/:id', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).json({ error: 'Repair record not found.' });
@@ -630,7 +727,15 @@ app.get('/api/admin/repairs/:id', requireAdmin, (request, response) => {
   response.json({ repair, maintenanceLogs: listMaintenanceLogsForRepair(repair.id) });
 });
 
-app.patch('/api/admin/repairs/:id/status', requireAdmin, (request, response) => {
+app.delete('/api/admin/repairs/:id', requireAdmin, (request, response) => {
+  try {
+    response.json({ result: deleteRepair(parseId(routeParam(request.params.id, 'id'))) });
+  } catch (error) {
+    respondError(request, response, error, 400);
+  }
+});
+
+app.patch('/api/admin/repairs/:id/status', requireRepairOrAdmin, (request, response) => {
   try {
     response.json({ repair: updateRepairStatus(parseId(routeParam(request.params.id, 'id')), String(request.body.status || '')) });
   } catch (error) {
@@ -638,7 +743,7 @@ app.patch('/api/admin/repairs/:id/status', requireAdmin, (request, response) => 
   }
 });
 
-app.get('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).json({ error: 'Repair record not found.' });
@@ -648,7 +753,7 @@ app.get('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, respo
   response.json({ items: listMaintenanceLogsForRepair(repair.id) });
 });
 
-app.post('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.post('/api/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const user = getCurrentUser(request);
   if (!user) {
     response.status(401).json({ error: 'Authentication required.' });
@@ -659,6 +764,28 @@ app.post('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, resp
     response.status(201).json({
       maintenanceLog: createMaintenanceLog(parseId(routeParam(request.params.id, 'id')), user.id, request.body as Record<string, unknown>),
     });
+  } catch (error) {
+    respondError(request, response, error, 400);
+  }
+});
+
+app.get('/api/admin/maintenance-logs', requireRepairOrAdmin, (_request, response) => {
+  response.json({ items: listMaintenanceLogs() });
+});
+
+app.get('/api/admin/maintenance-logs/:id', requireRepairOrAdmin, (request, response) => {
+  const maintenanceLog = getMaintenanceLog(parseId(routeParam(request.params.id, 'id')));
+  if (!maintenanceLog) {
+    response.status(404).json({ error: 'Maintenance log not found.' });
+    return;
+  }
+
+  response.json({ maintenanceLog });
+});
+
+app.delete('/api/admin/maintenance-logs/:id', requireAdmin, (request, response) => {
+  try {
+    response.json({ maintenanceLog: deleteMaintenanceLog(parseId(routeParam(request.params.id, 'id'))) });
   } catch (error) {
     respondError(request, response, error, 400);
   }

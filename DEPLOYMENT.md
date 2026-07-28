@@ -65,6 +65,8 @@ APP_URL/login
 
 如果是 Docker 部署，后台保存认证配置后，请重启容器再让新配置生效。
 
+首次使用 GitHub OAuth 登录且数据库为空时，首个 OAuth 用户会自动创建为管理员；后续新增的 OAuth 用户默认创建为普通用户。历史数据库在补齐 RBAC 角色时也只会在缺少管理员时为最早用户补一个管理员，不会把所有历史用户批量提升为管理员。
+
 ---
 
 ## 三、关键环境变量
@@ -94,6 +96,9 @@ ALLOW_FIRST_LOGIN=false
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，例如：`github:123456,github:789012`
 - `ALLOW_FIRST_LOGIN`：只影响 GitHub OAuth 首次登录自动建号逻辑
+  - 空数据库下首个 OAuth 用户自动成为 `admin`
+  - 后续 OAuth 自动建号默认是 `user`
+  - 历史数据库迁移只会在缺少管理员时为最早用户补一个管理员，不会批量提权
 - Docker 部署必须保持 `DATABASE_PATH` 位于仓库的 `./data/` 持久化目录下；推荐值为 `./data/arcade-atlas.sqlite`，容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
 
 `.env` 已被 `.gitignore` 忽略；`.env.example` 仅保留占位符，不包含真实密钥。

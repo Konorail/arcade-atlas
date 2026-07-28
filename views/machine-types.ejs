@@ -5,9 +5,7 @@
     <form method="post" action="<%= editing ? `/admin/machine-types/${editing.id}` : '/admin/machine-types' %>" class="stack">
       <label>名称<input name="name" required value="<%= editing?.name || '' %>" /></label>
       <label>品牌<input name="brand" value="<%= editing?.brand || '' %>" /></label>
-      <label>型号<input name="model" value="<%= editing?.model || '' %>" /></label>
-      <label>分类<input name="category" value="<%= editing?.category || '' %>" /></label>
-      <label>默认图片 URL<input name="image" value="<%= editing?.image || '' %>" /></label>
+      <label>版本<input name="version" value="<%= editing?.version || '' %>" /></label>
       <label>描述<textarea name="description" rows="4"><%= editing?.description || '' %></textarea></label>
       <label>备注<textarea name="notes" rows="3"><%= editing?.notes || '' %></textarea></label>
       <label>状态
@@ -27,14 +25,13 @@
   <article class="panel stack">
     <h2>类型列表</h2>
     <table class="responsive-table">
-      <thead><tr><th>名称</th><th>品牌</th><th>型号</th><th>分类</th><th>使用中机台</th><th>状态</th><th></th></tr></thead>
+      <thead><tr><th>名称</th><th>品牌</th><th>版本</th><th>使用中机台</th><th>状态</th><th></th></tr></thead>
       <tbody>
         <% machineTypes.forEach((type) => { %>
           <tr>
             <td data-label="名称"><%= type.name %></td>
             <td data-label="品牌"><%= type.brand || '-' %></td>
-            <td data-label="型号"><%= type.model || '-' %></td>
-            <td data-label="分类"><%= type.category || '-' %></td>
+            <td data-label="版本"><%= type.version || '-' %></td>
             <td data-label="使用中机台"><%= type.active_machine_count || 0 %></td>
             <td data-label="状态"><%= ui.machineTypeStatusLabels[type.status] %></td>
             <td data-label="操作"><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>

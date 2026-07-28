@@ -1,0 +1,26 @@
+<%- include('partials/header', { title: `维护记录 #${maintenanceLog.id}` }) %>
+<section class="panel stack">
+  <h1>维护记录详情</h1>
+  <dl class="details-grid">
+    <div><dt>机台</dt><dd><%= maintenanceLog.machine_name %></dd></div>
+    <div><dt>机台编号</dt><dd><%= maintenanceLog.machine_code %></dd></div>
+    <div><dt>机台类型</dt><dd><%= maintenanceLog.type_name %></dd></div>
+    <div><dt>处理人</dt><dd><%= maintenanceLog.operator_name %></dd></div>
+    <div><dt>关联报修</dt><dd><a href="/admin/repairs/<%= maintenanceLog.repair_record_id %>">#<%= maintenanceLog.repair_record_id %></a></dd></div>
+    <div><dt>报修状态</dt><dd><span class="<%= ui.repairStatusClass(maintenanceLog.repair_status) %>"><%= ui.repairStatusLabels[maintenanceLog.repair_status] %></span></dd></div>
+    <div><dt>记录时间</dt><dd><%= formatDateTime(maintenanceLog.created_at) %></dd></div>
+    <% if (maintenanceLog.repair_content) { %>
+      <div class="full"><dt>报修内容</dt><dd><%= maintenanceLog.repair_content %></dd></div>
+    <% } %>
+    <div class="full"><dt>处理内容</dt><dd><%= maintenanceLog.content %></dd></div>
+  </dl>
+  <div class="actions">
+    <a class="button secondary" href="/admin/maintenance-logs">返回列表</a>
+    <% if (currentUser.role === 'admin') { %>
+      <form method="post" action="/admin/maintenance-logs/<%= maintenanceLog.id %>/delete" data-confirm="确认删除该维护记录吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+        <button class="button danger" type="submit">删除维护记录</button>
+      </form>
+    <% } %>
+  </div>
+</section>
+<%- include('partials/footer') %>

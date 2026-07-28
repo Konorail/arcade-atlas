@@ -198,6 +198,11 @@ code {
   box-shadow: 0 12px 24px rgba(51, 65, 85, 0.18);
 }
 
+.button.danger {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  box-shadow: 0 12px 24px rgba(185, 28, 28, 0.2);
+}
+
 .nav-pill {
   padding: 0.55rem 0.95rem;
   font-size: 0.95rem;
@@ -312,6 +317,13 @@ dd {
   flex: 1;
 }
 
+.inline-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .filter-grid {
   display: grid;
   gap: 1rem;
@@ -369,6 +381,20 @@ th {
 
 form {
   margin: 0;
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand-primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.danger-text {
+  color: #b91c1c;
 }
 
 .muted {
@@ -528,6 +554,34 @@ form {
   background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
 }
 
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.48);
+  z-index: 50;
+}
+
+.confirm-dialog-backdrop.is-visible {
+  display: flex;
+}
+
+.confirm-dialog {
+  width: min(100%, 28rem);
+  padding: 1.5rem;
+  border-radius: 1rem;
+  background: white;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.2);
+}
+
+.confirm-dialog h2,
+.confirm-dialog p {
+  margin: 0 0 1rem;
+}
+
 code,
 dd,
 p,
@@ -563,6 +617,11 @@ a:focus-visible {
   .inline-row,
   .inline-form {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inline-actions {
+    align-items: flex-start;
     flex-direction: column;
   }
 

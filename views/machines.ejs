@@ -12,7 +12,6 @@
       </label>
       <label>机台名称<input name="name" required /></label>
       <label>机台编号<input name="machine_code" required /></label>
-      <label>位置<input name="location" required /></label>
       <label>状态
         <select name="status">
           <% statuses.machineStatuses.forEach((status) => { %>
@@ -29,16 +28,22 @@
   <article class="panel stack">
     <h2>机台列表</h2>
     <table class="responsive-table">
-      <thead><tr><th>机台名称</th><th>机台编号</th><th>类型</th><th>位置</th><th>状态</th><th></th></tr></thead>
+      <thead><tr><th>机台名称</th><th>机台编号</th><th>类型</th><th>状态</th><th></th></tr></thead>
       <tbody>
         <% machines.forEach((machine) => { %>
           <tr>
             <td data-label="机台名称"><%= machine.name %></td>
             <td data-label="机台编号"><%= machine.machine_code %></td>
             <td data-label="类型"><%= machine.type_name %></td>
-            <td data-label="位置"><%= machine.location %></td>
             <td data-label="状态"><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></td>
-            <td data-label="操作"><a href="/admin/machines/<%= machine.id %>">详情</a></td>
+            <td data-label="操作">
+              <div class="inline-actions">
+                <a href="/admin/machines/<%= machine.id %>">详情</a>
+                <form method="post" action="/admin/machines/<%= machine.id %>/delete" data-confirm="确认删除该机台吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+                  <button class="link-button danger-text" type="submit">删除</button>
+                </form>
+              </div>
+            </td>
           </tr>
         <% }) %>
       </tbody>

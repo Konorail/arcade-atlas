@@ -1,16 +1,24 @@
-<%- include('partials/header', { title: '后台总览' }) %>
+<%- include('partials/header', { title: '后台首页' }) %>
 <section class="grid three-columns">
   <article class="panel stack compact"><h2>机台类型</h2><p class="metric"><%= machineTypes %></p></article>
   <article class="panel stack compact"><h2>具体机台</h2><p class="metric"><%= machines %></p></article>
   <article class="panel stack compact"><h2>报修记录</h2><p class="metric"><%= repairs %></p></article>
+  <article class="panel stack compact"><h2>维护记录</h2><p class="metric"><%= maintenanceLogs %></p></article>
 </section>
 <section class="panel stack top-gap">
-  <h1>后台管理入口</h1>
+  <h1>后台首页</h1>
   <div class="actions">
-    <a class="button" href="/admin/machine-types">机台类型管理</a>
-    <a class="button" href="/admin/machines">具体机台管理</a>
-    <a class="button" href="/admin/repairs">报修记录管理</a>
-    <a class="button secondary" href="/admin/auth-settings">认证设置</a>
+    <% if (currentUser.role === 'admin') { %>
+      <a class="button" href="/admin/machine-types">机台类型管理</a>
+      <a class="button" href="/admin/machines">具体机台管理</a>
+    <% } %>
+    <% if (currentUser.role === 'admin' || currentUser.role === 'repair') { %>
+      <a class="button" href="/admin/repairs">报修记录管理</a>
+      <a class="button" href="/admin/maintenance-logs">维护记录管理</a>
+    <% } %>
+    <% if (currentUser.role === 'admin') { %>
+      <a class="button secondary" href="/admin/auth-settings">设置</a>
+    <% } %>
   </div>
   <p class="muted">当前后台认证方式：<code><%= authMode %></code></p>
 </section>

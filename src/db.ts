@@ -8,13 +8,14 @@ export type MachineTypeStatus = 'active' | 'inactive';
 export type RepairStatus = 'PENDING' | 'PROCESSING' | 'RESOLVED' | 'UNRESOLVED';
 export type UserStatus = 'active' | 'disabled';
 export type UserAuthType = 'local' | 'oauth';
+export type UserRole = 'user' | 'repair' | 'admin';
 export type DatabaseHealth = {
   path: string;
   exists: boolean;
   initialized: boolean;
 };
-const introspectionTables = new Set(['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings']);
-const requiredTables = ['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings'] as const;
+const introspectionTables = new Set(['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings', 'schema_migrations']);
+const requiredTables = ['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings', 'schema_migrations'] as const;
 
 fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 
@@ -67,6 +68,7 @@ function rebuildLegacyUsersTable(): void {
       name TEXT NOT NULL,
       email TEXT,
       avatar TEXT,
+      role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'repair', 'admin')),
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -83,6 +85,7 @@ function rebuildLegacyUsersTable(): void {
       name,
       email,
       avatar,
+      role,
       status,
       created_at,
       updated_at
@@ -98,6 +101,7 @@ function rebuildLegacyUsersTable(): void {
       name,
       email,
       avatar,
+      ${hasColumn('users', 'role') ? 'role' : "'admin'"},
       status,
       created_at,
       updated_at
@@ -130,6 +134,11 @@ function ensureUsersTableColumns(): void {
 
 function initializeSchema(): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       auth_type TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_type IN ('local', 'oauth')),
@@ -141,6 +150,7 @@ function initializeSchema(): void {
       name TEXT NOT NULL,
       email TEXT,
       avatar TEXT,
+      role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'repair', 'admin')),
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -152,6 +162,7 @@ function initializeSchema(): void {
       name TEXT NOT NULL,
       brand TEXT,
       model TEXT,
+      version TEXT,
       category TEXT,
       description TEXT,
       image TEXT,
@@ -166,11 +177,11 @@ function initializeSchema(): void {
       machine_type_id INTEGER NOT NULL,
       name TEXT NOT NULL,
       machine_code TEXT NOT NULL UNIQUE,
-      location TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'normal' CHECK (status IN ('normal', 'maintenance', 'disabled')),
       qr_token TEXT NOT NULL UNIQUE,
       description TEXT,
       notes TEXT,
+      deleted_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (machine_type_id) REFERENCES machine_types(id)
@@ -181,6 +192,7 @@ function initializeSchema(): void {
       machine_id INTEGER NOT NULL,
       content TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED')),
+      deleted_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (machine_id) REFERENCES machines(id)
@@ -192,7 +204,8 @@ function initializeSchema(): void {
       machine_id INTEGER NOT NULL,
       operator_id INTEGER NOT NULL,
       content TEXT NOT NULL,
-      result TEXT NOT NULL,
+      result TEXT NOT NULL DEFAULT '',
+      deleted_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (repair_record_id) REFERENCES repair_records(id),
@@ -220,13 +233,322 @@ function initializeSchema(): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_users_oauth_lookup ON users(oauth_provider, oauth_provider_user_id);
     CREATE INDEX IF NOT EXISTS idx_machines_type_id ON machines(machine_type_id);
+    CREATE INDEX IF NOT EXISTS idx_machines_deleted_at ON machines(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_machines_qr_token ON machines(qr_token);
     CREATE INDEX IF NOT EXISTS idx_repairs_machine_id_created_at ON repair_records(machine_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_repairs_status_created_at ON repair_records(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_repairs_deleted_at ON repair_records(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_logs_machine_id_created_at ON maintenance_logs(machine_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_logs_repair_id_created_at ON maintenance_logs(repair_record_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON maintenance_logs(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_hash ON admin_sessions(session_hash);
   `);
+}
+
+function hasMigration(name: string): boolean {
+  const row = db.prepare(`SELECT name FROM schema_migrations WHERE name = ?`).get(name) as { name: string } | undefined;
+  return Boolean(row);
+}
+
+function recordMigration(name: string): void {
+  db.prepare(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`).run(name, new Date().toISOString());
+}
+
+function runMigration(name: string, apply: () => void): void {
+  if (hasMigration(name)) {
+    return;
+  }
+
+  apply();
+  recordMigration(name);
+}
+
+function hasAnyUsers(): boolean {
+  const row = db.prepare(`SELECT id FROM users ORDER BY id ASC LIMIT 1`).get() as { id: number } | undefined;
+  return Boolean(row);
+}
+
+function hasAdminUsers(): boolean {
+  const row = db.prepare(`SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`).get() as { id: number } | undefined;
+  return Boolean(row);
+}
+
+function promoteEarliestUserToAdmin(): void {
+  db.exec(`
+    UPDATE users
+    SET role = 'admin'
+    WHERE id = (
+      SELECT id
+      FROM users
+      ORDER BY id ASC
+      LIMIT 1
+    )
+  `);
+}
+
+function migrateMachineTypesVersionField(): void {
+  runMigration('20260728_machine_types_version', () => {
+    if (!hasColumn('machine_types', 'version')) {
+      db.exec(`ALTER TABLE machine_types ADD COLUMN version TEXT`);
+    }
+
+    db.exec(`
+      UPDATE machine_types
+      SET version = NULLIF(TRIM(model), '')
+      WHERE (version IS NULL OR TRIM(version) = '')
+        AND model IS NOT NULL
+        AND TRIM(model) != ''
+    `);
+  });
+}
+
+function migrateUsersRole(): void {
+  runMigration('20260728_users_role', () => {
+    if (!hasColumn('users', 'role')) {
+      db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'repair', 'admin'))`);
+    }
+
+    if (hasAnyUsers() && !hasAdminUsers()) {
+      promoteEarliestUserToAdmin();
+    }
+  });
+}
+
+function migrateUsersRoleBootstrapAdmin(): void {
+  runMigration('20260728_users_role_bootstrap_admin', () => {
+    if (!hasColumn('users', 'role')) {
+      return;
+    }
+
+    const summary = db.prepare(
+      `SELECT
+         COUNT(*) AS total_users,
+         SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admin_users,
+         SUM(CASE WHEN role != 'admin' THEN 1 ELSE 0 END) AS non_admin_users
+       FROM users`,
+    ).get() as { total_users: number; admin_users: number | null; non_admin_users: number | null };
+
+    if (summary.total_users === 0) {
+      return;
+    }
+
+    if ((summary.admin_users ?? 0) === 0) {
+      promoteEarliestUserToAdmin();
+      return;
+    }
+
+    if (summary.total_users > 1 && (summary.admin_users ?? 0) === summary.total_users) {
+      db.exec(`
+        UPDATE users
+        SET role = CASE
+          WHEN id = (
+            SELECT id
+            FROM users
+            ORDER BY id ASC
+            LIMIT 1
+          ) THEN 'admin'
+          ELSE 'user'
+        END
+      `);
+    }
+  });
+}
+
+function migrateMachinesSoftDelete(): void {
+  runMigration('20260728_machines_soft_delete', () => {
+    if (!hasColumn('machines', 'deleted_at')) {
+      db.exec(`ALTER TABLE machines ADD COLUMN deleted_at TEXT`);
+    }
+  });
+}
+
+function migrateRepairRecordsStatusAndSoftDelete(): void {
+  runMigration('20260728_repair_records_status_soft_delete', () => {
+    const hasDeletedAt = hasColumn('repair_records', 'deleted_at');
+    const tableSql = (
+      db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repair_records'`).get() as { sql: string } | undefined
+    )?.sql;
+
+    if (hasDeletedAt && tableSql?.includes(`'UNRESOLVED'`)) {
+      return;
+    }
+
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      CREATE TABLE repair_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        machine_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED')),
+        deleted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (machine_id) REFERENCES machines(id)
+      );
+      INSERT INTO repair_records_new (id, machine_id, content, status, deleted_at, created_at, updated_at)
+      SELECT
+        id,
+        machine_id,
+        content,
+        status,
+        ${hasDeletedAt ? 'deleted_at' : 'NULL'},
+        created_at,
+        updated_at
+      FROM repair_records;
+      DROP TABLE repair_records;
+      ALTER TABLE repair_records_new RENAME TO repair_records;
+      CREATE INDEX IF NOT EXISTS idx_repairs_machine_id_created_at ON repair_records(machine_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_repairs_status_created_at ON repair_records(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_repairs_deleted_at ON repair_records(deleted_at);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  });
+}
+
+function migrateRepairRecordsAllowUnresolvedHistory(): void {
+  runMigration('20260728_repair_records_allow_unresolved_history', () => {
+    const tableSql = (
+      db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repair_records'`).get() as { sql: string } | undefined
+    )?.sql;
+
+    if (tableSql?.includes(`'UNRESOLVED'`)) {
+      return;
+    }
+
+    const hasDeletedAt = hasColumn('repair_records', 'deleted_at');
+
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      CREATE TABLE repair_records_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        machine_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED')),
+        deleted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (machine_id) REFERENCES machines(id)
+      );
+      INSERT INTO repair_records_new (id, machine_id, content, status, deleted_at, created_at, updated_at)
+      SELECT
+        id,
+        machine_id,
+        content,
+        status,
+        ${hasDeletedAt ? 'deleted_at' : 'NULL'},
+        created_at,
+        updated_at
+      FROM repair_records;
+      DROP TABLE repair_records;
+      ALTER TABLE repair_records_new RENAME TO repair_records;
+      CREATE INDEX IF NOT EXISTS idx_repairs_machine_id_created_at ON repair_records(machine_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_repairs_status_created_at ON repair_records(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_repairs_deleted_at ON repair_records(deleted_at);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  });
+}
+
+function migrateMachinesDropLocation(): void {
+  runMigration('20260728_machines_drop_location', () => {
+    if (!hasColumn('machines', 'location')) {
+      return;
+    }
+
+    const hasDeletedAt = hasColumn('machines', 'deleted_at');
+
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      CREATE TABLE machines_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        machine_type_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        machine_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'normal' CHECK (status IN ('normal', 'maintenance', 'disabled')),
+        qr_token TEXT NOT NULL UNIQUE,
+        description TEXT,
+        notes TEXT,
+        deleted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (machine_type_id) REFERENCES machine_types(id)
+      );
+      INSERT INTO machines_new (id, machine_type_id, name, machine_code, status, qr_token, description, notes, deleted_at, created_at, updated_at)
+      SELECT
+        id,
+        machine_type_id,
+        name,
+        machine_code,
+        status,
+        qr_token,
+        description,
+        notes,
+        ${hasDeletedAt ? 'deleted_at' : 'NULL'},
+        created_at,
+        updated_at
+      FROM machines;
+      DROP TABLE machines;
+      ALTER TABLE machines_new RENAME TO machines;
+      CREATE INDEX IF NOT EXISTS idx_machines_type_id ON machines(machine_type_id);
+      CREATE INDEX IF NOT EXISTS idx_machines_deleted_at ON machines(deleted_at);
+      CREATE INDEX IF NOT EXISTS idx_machines_qr_token ON machines(qr_token);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  });
+}
+
+function migrateMaintenanceLogsContentAndSoftDelete(): void {
+  runMigration('20260728_maintenance_logs_content_soft_delete', () => {
+    const hasDeletedAt = hasColumn('maintenance_logs', 'deleted_at');
+
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN TRANSACTION;
+      CREATE TABLE maintenance_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repair_record_id INTEGER NOT NULL,
+        machine_id INTEGER NOT NULL,
+        operator_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        result TEXT NOT NULL DEFAULT '',
+        deleted_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (repair_record_id) REFERENCES repair_records(id),
+        FOREIGN KEY (machine_id) REFERENCES machines(id),
+        FOREIGN KEY (operator_id) REFERENCES users(id)
+      );
+      INSERT INTO maintenance_logs_new (id, repair_record_id, machine_id, operator_id, content, result, deleted_at, created_at, updated_at)
+      SELECT
+        id,
+        repair_record_id,
+        machine_id,
+        operator_id,
+        CASE
+          WHEN result IS NOT NULL AND TRIM(result) != '' AND content IS NOT NULL AND TRIM(content) != '' THEN TRIM(result) || CHAR(10) || CHAR(10) || TRIM(content)
+          WHEN result IS NOT NULL AND TRIM(result) != '' THEN TRIM(result)
+          ELSE TRIM(COALESCE(content, ''))
+        END,
+        '',
+        ${hasDeletedAt ? 'deleted_at' : 'NULL'},
+        created_at,
+        updated_at
+      FROM maintenance_logs;
+      DROP TABLE maintenance_logs;
+      ALTER TABLE maintenance_logs_new RENAME TO maintenance_logs;
+      CREATE INDEX IF NOT EXISTS idx_logs_machine_id_created_at ON maintenance_logs(machine_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_logs_repair_id_created_at ON maintenance_logs(repair_record_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON maintenance_logs(deleted_at);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  });
 }
 
 if (hasTable('users')) {
@@ -235,6 +557,14 @@ if (hasTable('users')) {
 
 initializeSchema();
 ensureUsersTableColumns();
+migrateUsersRole();
+migrateUsersRoleBootstrapAdmin();
+migrateMachineTypesVersionField();
+migrateMachinesSoftDelete();
+migrateMachinesDropLocation();
+migrateRepairRecordsStatusAndSoftDelete();
+migrateRepairRecordsAllowUnresolvedHistory();
+migrateMaintenanceLogsContentAndSoftDelete();
 
 export function closeDatabase(): void {
   db.close();
