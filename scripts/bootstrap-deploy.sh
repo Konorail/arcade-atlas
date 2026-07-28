@@ -1279,10 +1279,7 @@ show_environment_summary() {
 run_database_migrations() {
   step '执行数据库 Migration'
   if [[ "$MODE" == "docker" ]]; then
-    (
-      cd "$TARGET_DIR"
-      "${DOCKER_BIN[@]}" compose run --rm arcade-atlas npm run migrate
-    )
+    run_docker_compose_with_project_env run --rm arcade-atlas npm run migrate
   else
     (
       cd "$TARGET_DIR"
@@ -1293,36 +1290,116 @@ run_database_migrations() {
   MIGRATION_STATUS="已完成"
 }
 
-check_docker_container_status() {
+run_docker_compose_with_project_env() {
+  local env_file="$TARGET_DIR/.env"
+  local port=""
+  local database_path=""
+
+  if [[ -f "$env_file" ]]; then
+    port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
+    database_path="$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)"
+  fi
+
+  (
+    cd "$TARGET_DIR"
+    env \
+      PORT="${port:-}" \
+      DATABASE_PATH="${database_path:-}" \
+      "${DOCKER_BIN[@]}" compose --env-file "$env_file" "$@"
+  )
+}
+
+show_docker_compose_diagnostics() {
+  error 'Docker Compose 服务诊断：'
+  (
+    cd "$TARGET_DIR"
+    env \
+      PORT="$(read_env_value "$TARGET_DIR/.env" "PORT" 2>/dev/null || true)" \
+      DATABASE_PATH="$(read_env_value "$TARGET_DIR/.env" "DATABASE_PATH" 2>/dev/null || true)" \
+      "${DOCKER_BIN[@]}" compose --env-file "$TARGET_DIR/.env" ps
+  ) >&2 || true
+  (
+    cd "$TARGET_DIR"
+    env \
+      PORT="$(read_env_value "$TARGET_DIR/.env" "PORT" 2>/dev/null || true)" \
+      DATABASE_PATH="$(read_env_value "$TARGET_DIR/.env" "DATABASE_PATH" 2>/dev/null || true)" \
+      "${DOCKER_BIN[@]}" compose --env-file "$TARGET_DIR/.env" logs --tail=200
+  ) >&2 || true
+}
+
+get_docker_container_status() {
   local container_name='arcade-atlas'
-  local inspect_output
+  "${DOCKER_BIN[@]}" inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null || true
+}
 
-  inspect_output="$("${DOCKER_BIN[@]}" inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_name" 2>/dev/null || true)"
-  [[ -n "$inspect_output" ]] || fail_step '未检测到 arcade-atlas 容器。' "请执行：cd $TARGET_DIR && docker compose ps"
+fail_docker_container_status() {
+  local message="$1"
+  shift || true
+  error "$message"
+  for item in "$@"; do
+    [[ -n "$item" ]] && error "$item"
+  done
+  show_docker_compose_diagnostics
+  exit 1
+}
 
-  case "$inspect_output" in
-    running\ healthy|running\ none)
-      log "Docker 容器状态正常：$inspect_output"
-      ;;
-    *)
-      fail_step 'Docker 容器状态异常。' "当前状态：$inspect_output" "请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200"
-      ;;
-  esac
+check_docker_container_status() {
+  local max_wait_seconds="${1:-120}"
+  local poll_interval_seconds="${2:-2}"
+  local inspect_output=""
+  local current_status=""
+  local remaining_seconds=0
+
+  remaining_seconds="$max_wait_seconds"
+  while ((remaining_seconds >= 0)); do
+    inspect_output="$(get_docker_container_status)"
+    [[ -n "$inspect_output" ]] || fail_docker_container_status '未检测到 arcade-atlas 容器。'
+
+    current_status="$inspect_output"
+    case "$current_status" in
+      running\ healthy)
+        log "Docker 容器状态正常：$current_status"
+        return 0
+        ;;
+      running\ none)
+        log "Docker 容器未配置 healthcheck，按运行成功处理：$current_status"
+        return 0
+        ;;
+      *\ unhealthy)
+        fail_docker_container_status 'Docker 容器健康检查失败。' "当前状态：$current_status"
+        ;;
+      running\ starting|created\ starting|created\ none|restarting\ starting|restarting\ none)
+        if ((remaining_seconds == 0)); then
+          break
+        fi
+        log "等待 Docker 容器健康检查：当前状态 $current_status，剩余 ${remaining_seconds}s"
+        sleep "$poll_interval_seconds"
+        remaining_seconds=$((remaining_seconds - poll_interval_seconds))
+        ;;
+      exited\ *|dead\ *|removing\ *)
+        fail_docker_container_status 'Docker 容器状态异常。' "当前状态：$current_status"
+        ;;
+      *)
+        if ((remaining_seconds == 0)); then
+          break
+        fi
+        log "等待 Docker 容器就绪：当前状态 $current_status，剩余 ${remaining_seconds}s"
+        sleep "$poll_interval_seconds"
+        remaining_seconds=$((remaining_seconds - poll_interval_seconds))
+        ;;
+    esac
+  done
+
+  fail_docker_container_status '等待 Docker 容器健康检查超时。' "最大等待时间：${max_wait_seconds}s" "最后状态：${inspect_output:-unknown}"
 }
 
 stop_existing_docker_service() {
   local running_services=""
-  running_services="$(
-    cd "$TARGET_DIR"
-    "${DOCKER_BIN[@]}" compose ps --status running --services 2>/dev/null || true
-  )"
+  running_services="$(run_docker_compose_with_project_env ps --status running --services 2>/dev/null || true)"
 
   if printf '%s\n' "$running_services" | grep -qx 'arcade-atlas'; then
     log '检测到旧的 Docker 服务，正在停止 arcade-atlas 容器。'
-    (
-      cd "$TARGET_DIR"
-      "${DOCKER_BIN[@]}" compose stop arcade-atlas
-    ) || fail_step '停止旧的 Docker 服务失败。' "请执行：cd $TARGET_DIR && docker compose stop arcade-atlas"
+    run_docker_compose_with_project_env stop arcade-atlas || fail_step '停止旧的 Docker 服务失败。' "请执行：cd $TARGET_DIR && docker compose stop arcade-atlas"
     PREVIOUS_DOCKER_SERVICE_RUNNING=1
   else
     PREVIOUS_DOCKER_SERVICE_RUNNING=0
@@ -1335,10 +1412,7 @@ restore_docker_service_after_failed_migration() {
   [[ "$PREVIOUS_DOCKER_SERVICE_RUNNING" -eq 1 ]] || return 1
 
   warn '数据库 Migration 失败，正在尝试恢复之前的 Docker 服务。'
-  if ! (
-    cd "$TARGET_DIR"
-    "${DOCKER_BIN[@]}" compose start arcade-atlas
-  ); then
+  if ! run_docker_compose_with_project_env start arcade-atlas; then
     warn '恢复旧的 Docker 服务失败。'
     return 1
   fi
@@ -1360,15 +1434,12 @@ run_docker_deploy() {
 
   confirm '将按“停止旧服务 → 数据库 Migration → 启动新服务”的顺序执行 Docker 升级，是否继续？' || fail_step '用户取消启动 Docker 服务。'
 
-  (
-    cd "$TARGET_DIR"
-    if ! "${DOCKER_BIN[@]}" compose config >/dev/null; then
-      fail_step 'docker compose config 检查失败。' "请执行：cd $TARGET_DIR && docker compose config"
-    fi
-    if ! "${DOCKER_BIN[@]}" compose build; then
-      fail_step 'Docker 镜像构建失败。' "请执行：cd $TARGET_DIR && docker compose build"
-    fi
-  )
+  if ! run_docker_compose_with_project_env config >/dev/null; then
+    fail_step 'docker compose config 检查失败。' "请执行：cd $TARGET_DIR && docker compose config"
+  fi
+  if ! run_docker_compose_with_project_env build; then
+    fail_step 'Docker 镜像构建失败。' "请执行：cd $TARGET_DIR && docker compose build"
+  fi
   BUILD_STATUS="已通过"
 
   stop_existing_docker_service
@@ -1382,14 +1453,9 @@ run_docker_deploy() {
       "如需检查现有容器状态，请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200"
   fi
 
-  (
-    cd "$TARGET_DIR"
-    if ! "${DOCKER_BIN[@]}" compose up -d; then
-      fail_step 'Docker Compose 启动失败。' \
-        "请执行：cd $TARGET_DIR && docker compose ps" \
-        "请执行：cd $TARGET_DIR && docker compose logs --tail=200"
-    fi
-  )
+  if ! run_docker_compose_with_project_env up -d; then
+    fail_docker_container_status 'Docker Compose 启动失败。'
+  fi
 
   check_docker_container_status
   run_health_check "$port"
