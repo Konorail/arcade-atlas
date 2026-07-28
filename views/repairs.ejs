@@ -14,7 +14,7 @@
       <select name="status">
         <option value="">全部</option>
         <% statuses.repairStatuses.forEach((status) => { %>
-          <option value="<%= status %>" <%= String(filters.status || '') === status ? 'selected' : '' %>><%= status %></option>
+          <option value="<%= status %>" <%= String(filters.status || '') === status ? 'selected' : '' %>><%= ui.repairStatusLabels[status] %></option>
         <% }) %>
       </select>
     </label>
@@ -33,8 +33,8 @@
           <td><%= repair.machine_name %></td>
           <td><%= repair.machine_code %></td>
           <td><%= repair.type_name %></td>
-          <td><%= repair.status %></td>
-          <td><%= repair.created_at %></td>
+          <td><span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span></td>
+          <td><%= formatDateTime(repair.created_at) %></td>
           <td><%= repair.content %></td>
           <td><a href="/admin/repairs/<%= repair.id %>">详情</a></td>
         </tr>

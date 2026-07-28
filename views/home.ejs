@@ -1,14 +1,59 @@
 <%- include('partials/header', { title: '首页' }) %>
-<section class="panel stack">
-  <h1>Arcade Atlas</h1>
-  <p>围绕实体机台建立类型、二维码、报修记录与维修历史。</p>
-  <ul>
-    <li>访客扫码后可直接查看机台详情并提交报修</li>
-    <li>后台用户通过 OAuth 登录后管理机台类型、具体机台、报修和维修日志</li>
-    <li>每台机台都有稳定的数字身份与可再生的二维码</li>
-  </ul>
+<section class="hero panel stack">
+  <span class="eyebrow">Arcade Atlas</span>
+  <h1>机台报修与维修管理系统</h1>
+  <p class="hero-copy">可快速提交报修、查看维修记录及管理机台，适合门店与机厅统一维护设备状态。</p>
   <div class="actions">
-    <a class="button" href="/login">进入后台</a>
+    <a class="button" href="/repairs">申请报修</a>
   </div>
+</section>
+
+<section class="grid two-columns top-gap" data-home-overview-url="/api/public/overview">
+  <article class="panel stack">
+    <div class="section-heading">
+      <h2>最近 15 条报修记录</h2>
+      <span class="muted">自动刷新</span>
+    </div>
+    <div class="stack" data-home-repairs-list>
+      <% if (recentRepairs.length === 0) { %>
+        <p class="empty-state">暂无报修记录。</p>
+      <% } else { %>
+        <% recentRepairs.forEach((repair) => { %>
+          <article class="card record-card stack compact">
+            <div class="record-meta">
+              <strong><%= repair.machine_name %></strong>
+              <span><%= formatDateTime(repair.created_at) %></span>
+            </div>
+            <span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span>
+            <p><%= repair.content %></p>
+          </article>
+        <% }) %>
+      <% } %>
+    </div>
+  </article>
+
+  <article class="panel stack">
+    <div class="section-heading">
+      <h2>最近 15 条维修记录</h2>
+      <span class="muted">自动刷新</span>
+    </div>
+    <div class="stack" data-home-maintenance-list>
+      <% if (recentMaintenanceLogs.length === 0) { %>
+        <p class="empty-state">暂无维修记录。</p>
+      <% } else { %>
+        <% recentMaintenanceLogs.forEach((log) => { %>
+          <article class="card record-card stack compact">
+            <div class="record-meta">
+              <strong><%= log.machine_name %></strong>
+              <span><%= formatDateTime(log.created_at) %></span>
+            </div>
+            <span class="muted"><%= log.operator_name %></span>
+            <p><%= log.content %></p>
+            <span class="muted">维修说明：<%= log.result %></span>
+          </article>
+        <% }) %>
+      <% } %>
+    </div>
+  </article>
 </section>
 <%- include('partials/footer') %>

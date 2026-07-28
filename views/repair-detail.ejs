@@ -6,17 +6,18 @@
       <div><dt>所属机台</dt><dd><%= repair.machine_name %></dd></div>
       <div><dt>机台编号</dt><dd><%= repair.machine_code %></dd></div>
       <div><dt>机台类型</dt><dd><%= repair.type_name %></dd></div>
-      <div><dt>报修时间</dt><dd><%= repair.created_at %></dd></div>
+      <div><dt>报修时间</dt><dd><%= formatDateTime(repair.created_at) %></dd></div>
+      <div><dt>当前状态</dt><dd><span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span></dd></div>
       <div class="full"><dt>问题内容</dt><dd><%= repair.content %></dd></div>
     </dl>
     <form method="post" action="/admin/repairs/<%= repair.id %>/status" class="inline-form">
-      <label>当前状态
-        <select name="status">
-          <% statuses.repairStatuses.forEach((status) => { %>
-            <option value="<%= status %>" <%= repair.status === status ? 'selected' : '' %>><%= status %></option>
-          <% }) %>
-        </select>
-      </label>
+    <label>当前状态
+      <select name="status">
+        <% statuses.repairStatuses.forEach((status) => { %>
+          <option value="<%= status %>" <%= repair.status === status ? 'selected' : '' %>><%= ui.repairStatusLabels[status] %></option>
+        <% }) %>
+      </select>
+    </label>
       <button class="button" type="submit">更新状态</button>
     </form>
   </article>
@@ -30,7 +31,7 @@
         <select name="repair_status">
           <option value="">保持不变</option>
           <% statuses.repairStatuses.forEach((status) => { %>
-            <option value="<%= status %>"><%= status %></option>
+            <option value="<%= status %>"><%= ui.repairStatusLabels[status] %></option>
           <% }) %>
         </select>
       </label>
@@ -49,7 +50,7 @@
         <article class="card stack compact">
           <div class="inline-row">
             <strong><%= log.operator_name %></strong>
-            <span><%= log.created_at %></span>
+            <span><%= formatDateTime(log.created_at) %></span>
           </div>
           <p><%= log.content %></p>
           <span>结果：<%= log.result %></span>

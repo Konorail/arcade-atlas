@@ -55,7 +55,7 @@
       <% } else { %>
         <ul class="plain-list">
           <% settings.localUsers.forEach((user) => { %>
-            <li><strong><%= user.username %></strong>（状态：<%= user.status %>）</li>
+            <li><strong><%= user.username %></strong>（状态：<%= ui.userStatusLabels[user.status] %>）</li>
           <% }) %>
         </ul>
       <% } %>

@@ -1,0 +1,37 @@
+<%- include('partials/header', { title: '申请报修' }) %>
+<section class="panel stack">
+  <span class="eyebrow">申请报修</span>
+  <h1>选择需要报修的机台</h1>
+  <p class="muted">按分类浏览机台，进入详情页后即可提交报修内容。</p>
+</section>
+
+<% if (machineGroups.length === 0) { %>
+  <section class="panel stack top-gap">
+    <p class="empty-state">当前还没有可供报修的机台。</p>
+  </section>
+<% } else { %>
+  <% machineGroups.forEach((group) => { %>
+    <section class="stack top-gap">
+      <div class="section-heading">
+        <h2><%= group.name %></h2>
+        <span class="muted"><%= group.items.length %> 台机台</span>
+      </div>
+      <div class="grid three-columns">
+        <% group.items.forEach((machine) => { %>
+          <article class="panel machine-card stack compact">
+            <div class="record-meta">
+              <strong><%= machine.name %></strong>
+              <span><%= machine.machine_code %></span>
+            </div>
+            <span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span>
+            <p class="muted"><%= machine.location %></p>
+            <div class="actions">
+              <a class="button" href="/machine/<%= machine.qr_token %>">申请报修</a>
+            </div>
+          </article>
+        <% }) %>
+      </div>
+    </section>
+  <% }) %>
+<% } %>
+<%- include('partials/footer') %>
