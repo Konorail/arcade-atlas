@@ -1,11 +1,12 @@
 {
   "name": "arcade-atlas",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lightweight arcade machine management and repair record system",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc --project tsconfig.json",
+    "migrate": "node dist/db.js",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit --project tsconfig.json"
   },

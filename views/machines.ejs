@@ -28,17 +28,17 @@
 
   <article class="panel stack">
     <h2>机台列表</h2>
-    <table>
+    <table class="responsive-table">
       <thead><tr><th>机台名称</th><th>机台编号</th><th>类型</th><th>位置</th><th>状态</th><th></th></tr></thead>
       <tbody>
         <% machines.forEach((machine) => { %>
           <tr>
-            <td><%= machine.name %></td>
-            <td><%= machine.machine_code %></td>
-            <td><%= machine.type_name %></td>
-            <td><%= machine.location %></td>
-            <td><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></td>
-            <td><a href="/admin/machines/<%= machine.id %>">详情</a></td>
+            <td data-label="机台名称"><%= machine.name %></td>
+            <td data-label="机台编号"><%= machine.machine_code %></td>
+            <td data-label="类型"><%= machine.type_name %></td>
+            <td data-label="位置"><%= machine.location %></td>
+            <td data-label="状态"><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></td>
+            <td data-label="操作"><a href="/admin/machines/<%= machine.id %>">详情</a></td>
           </tr>
         <% }) %>
       </tbody>

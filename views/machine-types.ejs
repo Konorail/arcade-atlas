@@ -26,18 +26,18 @@
 
   <article class="panel stack">
     <h2>类型列表</h2>
-    <table>
+    <table class="responsive-table">
       <thead><tr><th>名称</th><th>品牌</th><th>型号</th><th>分类</th><th>使用中机台</th><th>状态</th><th></th></tr></thead>
       <tbody>
         <% machineTypes.forEach((type) => { %>
           <tr>
-            <td><%= type.name %></td>
-            <td><%= type.brand || '-' %></td>
-            <td><%= type.model || '-' %></td>
-            <td><%= type.category || '-' %></td>
-            <td><%= type.active_machine_count || 0 %></td>
-            <td><%= ui.machineTypeStatusLabels[type.status] %></td>
-            <td><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>
+            <td data-label="名称"><%= type.name %></td>
+            <td data-label="品牌"><%= type.brand || '-' %></td>
+            <td data-label="型号"><%= type.model || '-' %></td>
+            <td data-label="分类"><%= type.category || '-' %></td>
+            <td data-label="使用中机台"><%= type.active_machine_count || 0 %></td>
+            <td data-label="状态"><%= ui.machineTypeStatusLabels[type.status] %></td>
+            <td data-label="操作"><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>
           </tr>
         <% }) %>
       </tbody>

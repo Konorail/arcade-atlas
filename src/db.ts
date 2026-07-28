@@ -8,7 +8,13 @@ export type MachineTypeStatus = 'active' | 'inactive';
 export type RepairStatus = 'PENDING' | 'PROCESSING' | 'RESOLVED' | 'UNRESOLVED';
 export type UserStatus = 'active' | 'disabled';
 export type UserAuthType = 'local' | 'oauth';
+export type DatabaseHealth = {
+  path: string;
+  exists: boolean;
+  initialized: boolean;
+};
 const introspectionTables = new Set(['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings']);
+const requiredTables = ['users', 'machine_types', 'machines', 'repair_records', 'maintenance_logs', 'admin_sessions', 'app_settings'] as const;
 
 fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 
@@ -232,4 +238,12 @@ ensureUsersTableColumns();
 
 export function closeDatabase(): void {
   db.close();
+}
+
+export function getDatabaseHealth(): DatabaseHealth {
+  return {
+    path: config.databasePath,
+    exists: fs.existsSync(config.databasePath),
+    initialized: requiredTables.every((tableName) => hasTable(tableName)),
+  };
 }

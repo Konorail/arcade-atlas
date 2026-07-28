@@ -31,10 +31,40 @@
     if (!root) {
       root = document.createElement('div');
       root.setAttribute('data-toast-root', '');
+      root.setAttribute('aria-live', 'polite');
       root.className = 'toast-root';
       document.body.appendChild(root);
     }
     return root;
+  }
+
+  function setupMobileNav() {
+    const toggle = document.querySelector('[data-nav-toggle]');
+    const nav = document.querySelector('[data-site-nav]');
+    if (!toggle || !nav) {
+      return;
+    }
+
+    const closeNav = () => {
+      nav.classList.remove('is-open');
+      toggle.setAttribute('aria-expanded', 'false');
+    };
+
+    toggle.addEventListener('click', () => {
+      const nextState = !nav.classList.contains('is-open');
+      nav.classList.toggle('is-open', nextState);
+      toggle.setAttribute('aria-expanded', nextState ? 'true' : 'false');
+    });
+
+    nav.querySelectorAll('a').forEach((link) => {
+      link.addEventListener('click', closeNav);
+    });
+
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 720) {
+        closeNav();
+      }
+    });
   }
 
   function showToast(message, type) {
@@ -294,6 +324,7 @@
   }
 
   setupFlashToast();
+  setupMobileNav();
   setupHomeOverviewPolling();
   setupRepairForm();
   setupStandardForms();

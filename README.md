@@ -8,6 +8,7 @@
   - 用户名 + 密码
   - GitHub OAuth
 - 安装脚本会明确要求你二选一完成首次部署
+- 安装脚本支持首次安装、已安装检测、版本检测、安全升级与健康检查
 - 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
 - 首页可直接进入公开机台列表，按分类选择机台后提交报修
@@ -52,11 +53,19 @@
        APP_URL/auth/github/callback
        ```
 
-3. 安装依赖并启动：
+3. 安装依赖并启动开发环境：
 
    ```bash
    npm ci
    npm run dev
+   ```
+
+   如果你要按生产方式手动启动，请执行：
+
+   ```bash
+   npm run build
+   npm run migrate
+   npm run start
    ```
 
 4. 打开浏览器访问：
@@ -82,15 +91,26 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 
 脚本会按以下顺序执行：
 
-1. 检查系统环境
-2. 检查 / 安装 Docker
-3. 检查 / 安装 Docker Compose Plugin
-4. 要求你选择后台认证方式
-5. 生成 `.env`
-6. 启动前检查认证配置是否完整
-7. 启动 Docker Compose
-8. 执行健康检查
-9. 输出最终访问地址与登录方式
+1. 检测是否为首次安装或已安装环境
+2. 输出 Git / Docker / Compose / `.env` / 数据库 / 版本状态
+3. 检查 / 安装 Docker 或 Node.js 运行环境
+4. 首次安装时生成 `.env` 并要求选择后台认证方式
+5. 已安装环境按需确认升级，并自动备份 `.env` 与 `data/`
+6. 拉取最新代码或保留当前本地代码
+7. 执行镜像构建或 `npm ci + npm run build`
+8. 执行数据库 Migration
+9. 启动服务并执行健康检查
+10. 输出版本、服务状态、访问地址与登录方式
+
+如果检测到新版本，脚本会提示：
+
+```text
+当前版本：vX.Y.Z
+最新版本：vX.Y.Z
+检测到新版本，是否升级？ [y/N]
+```
+
+如果选择 `N`，脚本会保留当前环境不变并安全退出。
 
 ### Docker Compose Plugin 安装说明
 
@@ -123,6 +143,13 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
 - `OAUTH_ALLOWLIST`：允许访问后台的 GitHub 用户列表，格式为 `github:用户ID`
 - `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的 GitHub 用户首次自动创建
+
+## 版本与升级
+
+- 仓库根目录的 `VERSION` 文件用于标记当前应用版本
+- `/health` 会返回当前版本、数据库初始化状态和基础服务检查结果
+- 升级时脚本不会覆盖现有 `.env`，会优先保留数据库与 `data/` 目录内容
+- Docker 模式下会先重新构建镜像，再执行 Migration，最后拉起服务
 
 ## 后台认证设置
 
