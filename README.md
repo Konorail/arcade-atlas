@@ -95,12 +95,11 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 2. 输出 Git / Docker / Compose / `.env` / 数据库 / 版本状态
 3. 检查 / 安装 Docker 或 Node.js 运行环境
 4. 首次安装时生成 `.env` 并要求选择后台认证方式
-5. 已安装环境按需确认升级，并自动备份 `.env` 与 `data/`
+5. 已安装环境按需确认升级，并自动备份 `.env`、数据库文件与 `data/`
 6. 拉取最新代码或保留当前本地代码
-7. 执行镜像构建或 `npm ci + npm run build`
-8. 执行数据库 Migration
-9. 启动服务并执行健康检查
-10. 输出版本、服务状态、访问地址与登录方式
+7. 预先执行 `docker compose config + docker compose build` 或 `npm ci + npm run build`
+8. 实际切换顺序固定为：停止旧服务 → 执行数据库 Migration → 启动服务 → 健康检查
+9. 输出版本、服务状态、访问地址与登录方式
 
 如果检测到新版本，脚本会提示：
 
@@ -111,6 +110,8 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 ```
 
 如果选择 `N`，脚本会保留当前环境不变并安全退出。
+
+Node 模式下，任何需要停止旧服务的确认都会发生在停止 `Arcade Atlas` 进程之前；如果用户取消，当前运行服务不会被影响。
 
 ### Docker Compose Plugin 安装说明
 
@@ -149,7 +150,22 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - 仓库根目录的 `VERSION` 文件用于标记当前应用版本
 - `/health` 会返回当前版本、数据库初始化状态和基础服务检查结果
 - 升级时脚本不会覆盖现有 `.env`，会优先保留数据库与 `data/` 目录内容
-- Docker 模式下会先重新构建镜像，再执行 Migration，最后拉起服务
+- Docker 模式会强制校验 `DATABASE_PATH` 是否落在容器可访问且持久化的 `./data/` 目录
+- 如果从旧的 Node 部署切换到 Docker，脚本会把仓库内 `data/` 目录下的旧绝对路径自动规范化为 `./data/...`
+- 如果 `DATABASE_PATH` 指向 Docker 容器外部不可持久化的位置，脚本会直接停止，避免静默创建新的空数据库
+
+## Node nohup 部署说明
+
+- 脚本的 Node 模式会使用 `nohup npm run start` 后台启动服务
+- PID 文件位置：`/opt/arcade-atlas/.deploy/arcade-atlas.pid`（本地仓库模式即 `<仓库目录>/.deploy/arcade-atlas.pid`）
+- 日志位置：`/opt/arcade-atlas/.deploy/app.log`（本地仓库模式即 `<仓库目录>/.deploy/app.log`）
+- 停止旧服务前，脚本会校验 PID 当前进程是否仍属于 Arcade Atlas；若无法确认，则拒绝 `kill`
+
+## Docker 数据目录
+
+- 宿主机持久化目录：`<仓库目录>/data`
+- 容器内挂载目录：`/app/data`
+- Docker 部署请保持 `DATABASE_PATH=./data/arcade-atlas.sqlite`，对应容器内实际路径 `/app/data/arcade-atlas.sqlite`
 
 ## 后台认证设置
 
