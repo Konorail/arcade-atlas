@@ -8,7 +8,7 @@
   - 用户名 + 密码
   - GitHub OAuth
 - 安装脚本会明确要求你二选一完成首次部署
-- 安装脚本支持首次安装、已安装检测、版本检测、安全升级与健康检查
+- 安装脚本支持首次安装、部署状态检测、版本检测、安全升级、重置部署、完全清理与健康检查
 - 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
 - 首页可直接进入公开机台列表，按分类选择机台后提交报修
@@ -91,15 +91,16 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 
 脚本会按以下顺序执行：
 
-1. 检测是否为首次安装或已安装环境
-2. 输出 Git / Docker / Compose / `.env` / 数据库 / 版本状态
-3. 检查 / 安装 Docker 或 Node.js 运行环境
-4. 首次安装时生成 `.env` 并要求选择后台认证方式
-5. 已安装环境按需确认升级，并自动备份 `.env`、数据库文件与 `data/`
-6. 拉取最新代码或保留当前本地代码
-7. 预先执行 `docker compose config + docker compose build` 或 `npm ci + npm run build`
-8. 实际切换顺序固定为：停止旧服务 → 执行数据库 Migration → 启动服务 → 健康检查
-9. 输出版本、服务状态、访问地址与登录方式
+1. 检测是否为首次安装、已安装且健康，或已安装但异常
+2. 输出 Git / Docker / Compose / `.env` / 数据库 / health check / 版本状态
+3. 已安装且健康时提供：升级 / 重置部署 / 完全清理 / 退出
+4. 已安装但异常时提示优先执行重置部署恢复
+5. 首次安装时生成 `.env` 并要求选择后台认证方式
+6. 检查 / 安装 Docker 或 Node.js 运行环境
+7. 升级前自动备份 `.env`、数据库文件与 `data/`
+8. 重置部署会先备份到 `/opt/arcade-atlas-backups/`，仅清理运行态文件，再继续重新部署
+9. 实际切换顺序固定为：停止旧服务 → 执行数据库 Migration → 启动服务 → 健康检查
+10. 输出版本、服务状态、访问地址与登录方式
 
 如果检测到新版本，脚本会提示：
 
@@ -112,6 +113,13 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 如果选择 `N`，脚本会保留当前环境不变并安全退出。
 
 Node 模式下，任何需要停止旧服务的确认都会发生在停止 `Arcade Atlas` 进程之前；如果用户取消，当前运行服务不会被影响。
+
+### 重置部署与完全清理
+
+- **重置部署**：保留 `.env`、`data/`、SQLite 数据库和业务数据，仅清理 `node_modules`、`dist`、`build`、`.deploy/`、PID / 日志与 `arcade-atlas` 容器，然后继续执行重新部署
+- **重置部署备份目录**：`/opt/arcade-atlas-backups/`
+- **完全清理**：仅删除 Arcade Atlas 自身代码、配置、数据目录、部署状态文件、容器和镜像，不会执行 `docker system prune`，也不会移除 Docker / Node.js / npm / 系统依赖
+- **完全清理前**：脚本会输出完整路径、校验目录签名文件，并要求输入 `DELETE ARCADE ATLAS` 进行二次确认
 
 ### Docker Compose Plugin 安装说明
 

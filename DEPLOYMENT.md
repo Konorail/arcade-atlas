@@ -1,6 +1,6 @@
 # Arcade Atlas 部署说明
 
-本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明首次安装、已安装检测、版本升级、后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
+本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明首次安装、部署状态检测、版本升级、重置部署、完全清理、后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
 
 ---
 
@@ -177,13 +177,16 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 ### 2. 脚本完成的工作
 
 - 检查系统环境与当前用户权限
-- 检测是否为首次安装或已安装环境
-- 输出 Git / Docker / Compose / `.env` / 数据库 / 版本检测结果
+- 检测是否为首次安装、已安装且健康，或已安装但异常
+- 输出 Git / Docker / Compose / `.env` / 数据库 / health check / 版本检测结果
+- 已安装且健康时提供：升级 / 重置部署 / 完全清理 / 退出
+- 已安装但异常时提示优先执行重置部署恢复
 - 检查或安装 Docker
 - 检查或安装 Docker Compose Plugin
 - 首次安装时选择后台认证方式
 - 自动生成 `.env`，已有 `.env` 则保留现有配置并补齐缺失键
 - 已安装环境升级前自动备份 `.env`、数据库文件和 `data/`
+- 重置部署时自动备份到 `/opt/arcade-atlas-backups/`
 - 在启动前预检查认证配置
 - 执行 `docker compose config`
 - 执行 `docker compose build`
@@ -212,7 +215,37 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 - 实际服务切换顺序固定为：停止旧服务 → 执行 Migration → 启动新服务 → 健康检查
 - 如果 Migration 失败，脚本会输出明确错误，并尝试恢复之前正在运行的服务，避免停在半升级状态
 
-### 4. 持久化数据
+### 4. 重置部署
+
+当脚本检测到当前环境异常，或你主动在菜单中选择“重置部署”时，脚本会：
+
+- 自动备份 `.env`、`data/`、SQLite 数据库到 `/opt/arcade-atlas-backups/`
+- 保留 Docker / Docker Compose / Node.js / npm / 系统依赖
+- 保留 `.env`、`data/`、SQLite 数据库与业务数据
+- 仅清理 `node_modules`、`dist`、`build`、`.deploy/`、PID / 日志，以及 `arcade-atlas` 容器
+- 清理完成后继续执行：环境检查 → 代码同步 → 配置恢复 → 安装依赖 / build → migration → 启动 → health check
+
+### 5. 完全清理
+
+当你选择“完全清理 Arcade Atlas”时，脚本会：
+
+- 先输出完整的项目目录、配置文件、数据目录、数据库路径和部署状态文件路径
+- 校验目标目录中存在：
+  - `package.json`
+  - `docker-compose.yml`
+  - `scripts/bootstrap-deploy.sh`
+- 可选创建清理前备份
+- 要求手动输入 `DELETE ARCADE ATLAS` 进行二次确认
+- 仅删除 Arcade Atlas 代码、`.env`、`data/`、SQLite 数据库、部署状态文件，以及 Arcade Atlas 自身容器和镜像
+
+脚本不会执行以下危险操作：
+
+- `docker system prune`
+- 删除其他项目容器 / 镜像
+- 卸载 Docker / Docker Compose / Node.js / npm
+- 删除系统依赖
+
+### 6. 持久化数据
 
 `docker-compose.yml` 会把宿主机目录映射到容器：
 
@@ -236,7 +269,7 @@ DATABASE_PATH=./data/arcade-atlas.sqlite
 
 如果你从旧的 Node 部署切换到 Docker，而 `.env` 中仍是旧的绝对路径（例如 `/opt/arcade-atlas/data/arcade-atlas.sqlite`），脚本会自动规范化为 `./data/arcade-atlas.sqlite`。如果 `DATABASE_PATH` 指向 `./data/` 之外的位置，脚本会直接停止并要求先迁移数据库，避免容器静默创建新的空数据库。
 
-### 5. 健康检查
+### 7. 健康检查
 
 项目提供：
 
