@@ -11,10 +11,10 @@
 - 安装脚本支持首次安装、部署状态检测、版本检测、安全升级、重置部署、完全清理与健康检查
 - 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
 - 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
-- 首页可直接进入公开机台列表，按分类选择机台后提交报修
+- 首页可直接进入公开机台列表，按机台类型选择机台后提交报修
 - 访客扫码进入机台详情页后，无需登录即可查看最近记录并以 Toast 反馈提交结果
 - 首页会自动轮询最近 15 条报修记录与维修记录
-- 后台支持报修状态流转、维修日志追加、机台历史追踪
+- 后台支持报修状态流转、维修日志追加、机台/报修/维护记录软删除与机台历史追踪
 - 服务端严格决定 `machine_id`、`repair_record_id`、`operator_id` 与时间字段
 
 ## 技术栈
@@ -219,6 +219,8 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `GET /admin/machine-types`
 - `GET /admin/machines`
 - `GET /admin/repairs`
+- `GET /admin/maintenance-logs`
+- `GET /admin/maintenance-logs/:id`
 - `GET /api/admin/machine-types`
 - `POST /api/admin/machine-types`
 - `PATCH /api/admin/machine-types/:id`
@@ -226,12 +228,17 @@ https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
 - `POST /api/admin/machines`
 - `GET /api/admin/machines/:id`
 - `PATCH /api/admin/machines/:id`
+- `DELETE /api/admin/machines/:id`
 - `POST /api/admin/machines/:id/regenerate-qr`
 - `GET /api/admin/repairs`
 - `GET /api/admin/repairs/:id`
 - `PATCH /api/admin/repairs/:id/status`
+- `DELETE /api/admin/repairs/:id`
 - `GET /api/admin/repairs/:id/maintenance-logs`
 - `POST /api/admin/repairs/:id/maintenance-logs`
+- `GET /api/admin/maintenance-logs`
+- `GET /api/admin/maintenance-logs/:id`
+- `DELETE /api/admin/maintenance-logs/:id`
 
 ## 部署说明
 
