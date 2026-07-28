@@ -316,13 +316,6 @@ app.get(
 
     response.render('public-machine', {
       ...view,
-      formMessage:
-        typeof request.query.message === 'string' && request.query.message.trim()
-          ? {
-              type: request.query.status === 'error' ? 'error' : 'success',
-              text: request.query.message.trim(),
-            }
-          : null,
     });
   }),
 );
