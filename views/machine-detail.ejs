@@ -16,7 +16,7 @@
       <label>状态
         <select name="status">
           <% statuses.machineStatuses.forEach((status) => { %>
-            <option value="<%= status %>" <%= machine.status === status ? 'selected' : '' %>><%= status %></option>
+            <option value="<%= status %>" <%= machine.status === status ? 'selected' : '' %>><%= ui.machineStatusLabels[status] %></option>
           <% }) %>
         </select>
       </label>
@@ -32,7 +32,7 @@
     <p>公开访问地址：<code>/machine/<%= machine.qr_token %></code></p>
     <div class="actions">
       <a class="button" href="/admin/machines/<%= machine.id %>/qr.png">下载二维码</a>
-      <form method="post" action="/admin/machines/<%= machine.id %>/regenerate-qr">
+      <form method="post" action="/admin/machines/<%= machine.id %>/regenerate-qr" data-confirm="重新生成后旧二维码将失效，确定继续吗？">
         <button class="button secondary" type="submit">重新生成二维码</button>
       </form>
     </div>
@@ -48,8 +48,8 @@
       <div class="stack">
         <% history.recentRepairs.forEach((repair) => { %>
           <article class="card stack compact">
-            <a href="/admin/repairs/<%= repair.id %>"><strong>#<%= repair.id %> · <%= repair.status %></strong></a>
-            <span><%= repair.created_at %></span>
+            <a href="/admin/repairs/<%= repair.id %>"><strong>#<%= repair.id %> · <span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span></strong></a>
+            <span><%= formatDateTime(repair.created_at) %></span>
             <p><%= repair.content %></p>
           </article>
         <% }) %>
@@ -66,7 +66,7 @@
         <% history.recentMaintenanceLogs.forEach((log) => { %>
           <article class="card stack compact">
             <strong><%= log.operator_name %></strong>
-            <span><%= log.created_at %></span>
+            <span><%= formatDateTime(log.created_at) %></span>
             <p><%= log.content %></p>
             <span>结果：<%= log.result %></span>
           </article>

@@ -6,7 +6,7 @@
       <div><dt>机台类型</dt><dd><%= machineType.name %></dd></div>
       <div><dt>机台编号</dt><dd><%= machine.machine_code %></dd></div>
       <div><dt>位置</dt><dd><%= machine.location %></dd></div>
-      <div><dt>当前状态</dt><dd><%= machine.status %></dd></div>
+      <div><dt>当前状态</dt><dd><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></dd></div>
       <% if (machine.description) { %>
         <div class="full"><dt>描述</dt><dd><%= machine.description %></dd></div>
       <% } %>
@@ -15,51 +15,54 @@
 
   <article class="panel stack">
     <h2>我要报修</h2>
-    <% if (typeof submitted !== 'undefined') { %><p class="success">报修已提交。</p><% } %>
-    <form method="post" action="/machine/<%= machine.qr_token %>/repairs" class="stack">
+    <p class="muted">提交后会立即进入待处理列表，请尽量描述清楚故障现象。</p>
+    <form method="post" action="/machine/<%= machine.qr_token %>/repairs" class="stack" data-repair-form data-history-token="<%= machine.qr_token %>" data-api-endpoint="/api/machines/<%= machine.qr_token %>/repairs">
       <label>
         问题描述
         <textarea name="content" rows="5" required placeholder="例如：左侧屏幕触摸失灵"></textarea>
       </label>
-      <button class="button" type="submit">提交报修</button>
+      <button class="button" type="submit" data-loading-text="提交中...">提交报修</button>
     </form>
+    <% if (formMessage) { %>
+      <div data-flash-toast="<%= formMessage.text %>" data-flash-toast-type="<%= formMessage.type %>"></div>
+    <% } %>
   </article>
 </section>
 
 <section class="grid two-columns top-gap">
   <article class="panel stack">
     <h2>最近报修记录</h2>
-    <% if (recentRepairs.length === 0) { %>
-      <p>暂无报修记录。</p>
-    <% } else { %>
-      <div class="stack">
+      <div class="stack" data-machine-repairs-list>
+      <% if (recentRepairs.length === 0) { %>
+        <p class="empty-state">暂无报修记录。</p>
+      <% } else { %>
         <% recentRepairs.forEach((repair) => { %>
-          <article class="card stack compact">
-            <strong><%= repair.status %></strong>
-            <span><%= repair.created_at %></span>
+          <article class="card record-card stack compact">
+            <span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span>
+            <span><%= formatDateTime(repair.created_at) %></span>
             <p><%= repair.content %></p>
           </article>
         <% }) %>
-      </div>
-    <% } %>
+      <% } %>
+    </div>
   </article>
 
   <article class="panel stack">
     <h2>最近维修日志</h2>
-    <% if (recentMaintenanceLogs.length === 0) { %>
-      <p>暂无维修日志。</p>
-    <% } else { %>
-      <div class="stack">
+    <div class="stack" data-machine-maintenance-list>
+      <% if (recentMaintenanceLogs.length === 0) { %>
+        <p class="empty-state">暂无维修日志。</p>
+      <% } else { %>
         <% recentMaintenanceLogs.forEach((log) => { %>
-          <article class="card stack compact">
+          <article class="card record-card stack compact">
             <strong><%= log.operator_name %></strong>
-            <span><%= log.created_at %></span>
+            <span><%= formatDateTime(log.created_at) %></span>
             <p><%= log.content %></p>
             <span>结果：<%= log.result %></span>
           </article>
         <% }) %>
-      </div>
-    <% } %>
+      <% } %>
+    </div>
   </article>
 </section>
 <%- include('partials/footer') %>

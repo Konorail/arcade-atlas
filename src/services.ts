@@ -74,6 +74,7 @@ export type MaintenanceLog = {
   created_at: string;
   updated_at: string;
   operator_name?: string;
+  machine_name?: string;
 };
 
 export type MachineView = {
@@ -506,6 +507,18 @@ export function listMachines(): Machine[] {
     .all() as Machine[];
 }
 
+export function listPublicMachines(): Machine[] {
+  return db
+    .prepare(
+      `SELECT machines.*, machine_types.name AS type_name, machine_types.brand, machine_types.model, machine_types.category
+       FROM machines
+       JOIN machine_types ON machine_types.id = machines.machine_type_id
+       WHERE machine_types.status = 'active'
+       ORDER BY COALESCE(NULLIF(machine_types.category, ''), '未分类') ASC, machines.name ASC`,
+    )
+    .all() as Machine[];
+}
+
 export function getMachine(id: number): Machine | null {
   return (
     (db
@@ -526,7 +539,7 @@ export function getMachineByToken(token: string): Machine | null {
         `SELECT machines.*, machine_types.name AS type_name, machine_types.brand, machine_types.model, machine_types.category
          FROM machines
          JOIN machine_types ON machine_types.id = machines.machine_type_id
-         WHERE machines.qr_token = ? AND machines.status != 'disabled'`,
+        WHERE machines.qr_token = ?`,
       )
       .get(token) as Machine | undefined) ?? null
   );
@@ -729,6 +742,32 @@ export function listMaintenanceLogsForRepair(repairId: number): MaintenanceLog[]
        ORDER BY maintenance_logs.created_at DESC`,
     )
     .all(repairId) as MaintenanceLog[];
+}
+
+export function listRecentRepairs(limit = 15): RepairRecord[] {
+  return db
+    .prepare(
+      `SELECT repair_records.*, machines.name AS machine_name, machines.machine_code, machine_types.name AS type_name
+       FROM repair_records
+       JOIN machines ON machines.id = repair_records.machine_id
+       JOIN machine_types ON machine_types.id = machines.machine_type_id
+       ORDER BY repair_records.created_at DESC
+       LIMIT ?`,
+    )
+    .all(limit) as RepairRecord[];
+}
+
+export function listRecentMaintenanceLogs(limit = 15): MaintenanceLog[] {
+  return db
+    .prepare(
+      `SELECT maintenance_logs.*, users.name AS operator_name, machines.name AS machine_name
+       FROM maintenance_logs
+       JOIN users ON users.id = maintenance_logs.operator_id
+       JOIN machines ON machines.id = maintenance_logs.machine_id
+       ORDER BY maintenance_logs.created_at DESC
+       LIMIT ?`,
+    )
+    .all(limit) as MaintenanceLog[];
 }
 
 export function createMaintenanceLog(repairId: number, operatorId: number, input: Record<string, unknown>): MaintenanceLog {

@@ -33,6 +33,9 @@ import {
   getRepair,
   getStatusOptions,
   isLocalLoginEnabled,
+  listPublicMachines,
+  listRecentMaintenanceLogs,
+  listRecentRepairs,
   listMachineTypes,
   listMachines,
   listMaintenanceLogsForRepair,
@@ -51,6 +54,25 @@ const app = express();
 const viewsDir = path.join(process.cwd(), 'views');
 const publicDir = path.join(process.cwd(), 'public');
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+const machineStatusLabels = {
+  normal: '🟢 正常',
+  maintenance: '🟡 维护中',
+  disabled: '⚫ 离线',
+} as const;
+const repairStatusLabels = {
+  PENDING: '🔴 报修中',
+  PROCESSING: '🟡 处理中',
+  RESOLVED: '🟢 已解决',
+  UNRESOLVED: '⚫ 未解决',
+} as const;
+const machineTypeStatusLabels = {
+  active: '启用',
+  inactive: '停用',
+} as const;
+const userStatusLabels = {
+  active: '启用',
+  disabled: '停用',
+} as const;
 const authEntryRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -91,6 +113,15 @@ app.use((request, response, next) => {
   response.locals.localLoginEnabled = isLocalLoginEnabled();
   response.locals.authMode = getEffectiveAuthMode();
   response.locals.statuses = getStatusOptions();
+  response.locals.ui = {
+    machineStatusLabels,
+    repairStatusLabels,
+    machineTypeStatusLabels,
+    userStatusLabels,
+    machineStatusClass: (status: keyof typeof machineStatusLabels) => `status-badge machine-status machine-status-${status}`,
+    repairStatusClass: (status: keyof typeof repairStatusLabels) => `status-badge repair-status repair-status-${status.toLowerCase()}`,
+  };
+  response.locals.formatDateTime = formatDateTime;
   next();
 });
 
@@ -136,6 +167,34 @@ function wantsJson(request: Request): boolean {
   return request.path.startsWith('/api/') || request.accepts(['json', 'html']) === 'json';
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+function groupMachinesByCategory() {
+  const groups = new Map<string, ReturnType<typeof listPublicMachines>>();
+  for (const machine of listPublicMachines()) {
+    const category = machine.category?.trim() || '未分类';
+    const items = groups.get(category) ?? [];
+    items.push(machine);
+    groups.set(category, items);
+  }
+
+  return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
+}
+
 function respondError(request: Request, response: Response, error: unknown, statusCode = 400): void {
   const message = error instanceof Error ? error.message : 'Unexpected error.';
   if (wantsJson(request)) {
@@ -151,7 +210,16 @@ app.get('/health', (_request, response) => {
 });
 
 app.get('/', (_request, response) => {
-  response.render('home');
+  response.render('home', {
+    recentRepairs: listRecentRepairs(15),
+    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
+  });
+});
+
+app.get('/repairs', (_request, response) => {
+  response.render('public-repairs', {
+    machineGroups: groupMachinesByCategory(),
+  });
 });
 
 app.get('/login', authEntryRateLimit, (_request, response) => {
@@ -217,15 +285,30 @@ app.get(
       return;
     }
 
-    response.render('public-machine', { ...view, submitted: request.query.submitted === '1' });
+    response.render('public-machine', {
+      ...view,
+      formMessage:
+        typeof request.query.message === 'string' && request.query.message.trim()
+          ? {
+              type: request.query.status === 'error' ? 'error' : 'success',
+              text: request.query.message.trim(),
+            }
+          : null,
+    });
   }),
 );
 
 app.post(
   '/machine/:token/repairs',
   asyncHandler(async (request, response) => {
-    createRepairForMachineToken(routeParam(request.params.token, 'token'), request.body as Record<string, unknown>);
-    response.redirect(`/machine/${routeParam(request.params.token, 'token')}?submitted=1`);
+    const token = routeParam(request.params.token, 'token');
+    try {
+      createRepairForMachineToken(token, request.body as Record<string, unknown>);
+      response.redirect(`/machine/${token}?message=${encodeURIComponent('报修已提交。')}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '报修提交失败，请稍后重试。';
+      response.redirect(`/machine/${token}?status=error&message=${encodeURIComponent(message)}`);
+    }
   }),
 );
 
@@ -444,6 +527,13 @@ app.get('/api/machines/:token/maintenance-logs', (request, response) => {
   }
 
   response.json({ items: view.recentMaintenanceLogs });
+});
+
+app.get('/api/public/overview', (_request, response) => {
+  response.json({
+    recentRepairs: listRecentRepairs(15),
+    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
+  });
 });
 
 app.get('/api/admin/machine-types', requireAdmin, (_request, response) => {

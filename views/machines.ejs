@@ -16,7 +16,7 @@
       <label>状态
         <select name="status">
           <% statuses.machineStatuses.forEach((status) => { %>
-            <option value="<%= status %>"><%= status %></option>
+            <option value="<%= status %>"><%= ui.machineStatusLabels[status] %></option>
           <% }) %>
         </select>
       </label>
@@ -37,7 +37,7 @@
             <td><%= machine.machine_code %></td>
             <td><%= machine.type_name %></td>
             <td><%= machine.location %></td>
-            <td><%= machine.status %></td>
+            <td><span class="<%= ui.machineStatusClass(machine.status) %>"><%= ui.machineStatusLabels[machine.status] %></span></td>
             <td><a href="/admin/machines/<%= machine.id %>">详情</a></td>
           </tr>
         <% }) %>

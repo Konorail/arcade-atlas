@@ -13,7 +13,7 @@
       <label>状态
         <select name="status">
           <% statuses.machineTypeStatuses.forEach((status) => { %>
-            <option value="<%= status %>" <%= (editing?.status || 'active') === status ? 'selected' : '' %>><%= status %></option>
+            <option value="<%= status %>" <%= (editing?.status || 'active') === status ? 'selected' : '' %>><%= ui.machineTypeStatusLabels[status] %></option>
           <% }) %>
         </select>
       </label>
@@ -36,7 +36,7 @@
             <td><%= type.model || '-' %></td>
             <td><%= type.category || '-' %></td>
             <td><%= type.active_machine_count || 0 %></td>
-            <td><%= type.status %></td>
+            <td><%= ui.machineTypeStatusLabels[type.status] %></td>
             <td><a href="/admin/machine-types/<%= type.id %>">编辑</a></td>
           </tr>
         <% }) %>
