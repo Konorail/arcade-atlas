@@ -18,7 +18,9 @@
 
   <article class="panel stack">
     <h2>我要报修</h2>
-    <form id="repair-form" class="stack" novalidate>
+    <% if (submitted) { %><p class="success">报修已提交。</p><% } %>
+    <noscript><p class="muted" style="font-size:0.85rem;">请在现代浏览器中启用 JavaScript 以获得最佳体验。</p></noscript>
+    <form id="repair-form" method="post" action="/machine/<%= machine.qr_token %>/repairs" class="stack" novalidate>
       <label>
         问题描述
         <textarea id="repair-content" name="content" rows="5" required placeholder="例如：左侧屏幕触摸失灵" minlength="5"></textarea>
