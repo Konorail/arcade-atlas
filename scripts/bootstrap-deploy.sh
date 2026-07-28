@@ -32,6 +32,20 @@ REDIS_STATUS="未启用"
 CURRENT_USER_PERMISSION_STATUS="unknown"
 PREVIOUS_DOCKER_SERVICE_RUNNING=0
 PREVIOUS_NODE_SERVICE_RUNNING=0
+APP_BACKUP_ROOT="${APP_BACKUP_ROOT:-/opt/arcade-atlas-backups}"
+DEPLOYMENT_CONFIG_STATUS="missing"
+DEPLOYMENT_STATE_FILE_STATUS="missing"
+DEPLOYMENT_STATUS_CLASS="unknown"
+RUNTIME_DEPLOY_MODE="none"
+RUNTIME_SERVICE_STATUS="unknown"
+RUNTIME_STATUS_DETAILS="unknown"
+HEALTH_CHECK_STATUS="unknown"
+SELECTED_ACTION="install"
+STATE_FILE_DEPLOY_MODE=""
+STATE_FILE_DEPLOY_STATUS=""
+STATE_FILE_DEPLOY_VERSION=""
+STATE_FILE_TARGET_DIR=""
+declare -a DEPLOYMENT_ISSUES=()
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -57,6 +71,14 @@ fail_step() {
     [[ -n "$item" ]] && error "$item"
   done
   exit 1
+}
+
+clear_deployment_issues() {
+  DEPLOYMENT_ISSUES=()
+}
+
+append_deployment_issue() {
+  DEPLOYMENT_ISSUES+=("$1")
 }
 
 usage() {
@@ -390,6 +412,20 @@ show_detection_summary() {
   log "当前安装版本：$CURRENT_INSTALL_VERSION"
   log "当前代码版本：$CURRENT_CODE_VERSION"
   log "最新版本：$LATEST_VERSION"
+  log "部署配置：$DEPLOYMENT_CONFIG_STATUS"
+  log "部署状态文件：$DEPLOYMENT_STATE_FILE_STATUS"
+  log "运行模式：$RUNTIME_DEPLOY_MODE"
+  log "运行状态：$RUNTIME_SERVICE_STATUS"
+  log "运行详情：$RUNTIME_STATUS_DETAILS"
+  log "health check：$HEALTH_CHECK_STATUS"
+  log "部署结论：$DEPLOYMENT_STATUS_CLASS"
+  if [[ "${#DEPLOYMENT_ISSUES[@]}" -gt 0 ]]; then
+    warn '检测到以下部署异常：'
+    local issue
+    for issue in "${DEPLOYMENT_ISSUES[@]}"; do
+      warn "  - $issue"
+    done
+  fi
 }
 
 parse_args() {
@@ -494,29 +530,77 @@ clone_or_update_repo() {
   fi
 }
 
-backup_existing_installation() {
+ensure_directory_available() {
+  local directory="$1"
+
+  if mkdir -p "$directory" >/dev/null 2>&1; then
+    return
+  fi
+
+  ensure_sudo
+  $SUDO mkdir -p "$directory"
+  $SUDO chown "$(id -u):$(id -g)" "$directory" 2>/dev/null || true
+}
+
+copy_path_into_directory() {
+  local source_path="$1"
+  local destination_dir="$2"
+
+  cp -a "$source_path" "$destination_dir" 2>/dev/null && return
+
+  ensure_sudo
+  $SUDO cp -a "$source_path" "$destination_dir"
+  local copied_path="$destination_dir/$(basename "$source_path")"
+  [[ -e "$copied_path" ]] && $SUDO chown -R "$(id -u):$(id -g)" "$copied_path" 2>/dev/null || true
+}
+
+create_backup_snapshot() {
+  local backup_root="$1"
+  local label="$2"
   local env_file="$TARGET_DIR/.env"
   local database_value database_path backup_dir timestamp
   timestamp="$(date +%Y%m%d-%H%M%S)"
-  backup_dir="$TARGET_DIR/.deploy/backups/$timestamp"
-  mkdir -p "$backup_dir"
+  backup_dir="$backup_root/${label}-${timestamp}"
+  ensure_directory_available "$backup_dir"
 
   if [[ -f "$env_file" ]]; then
-    cp "$env_file" "$backup_dir/.env.backup"
+    cp "$env_file" "$backup_dir/.env.backup" 2>/dev/null || {
+      ensure_sudo
+      $SUDO cp "$env_file" "$backup_dir/.env.backup"
+      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/.env.backup" 2>/dev/null || true
+    }
   fi
 
   if [[ -d "$TARGET_DIR/data" ]]; then
-    cp -a "$TARGET_DIR/data" "$backup_dir/data"
+    copy_path_into_directory "$TARGET_DIR/data" "$backup_dir"
   fi
 
   database_value="$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)"
   database_path="$(resolve_env_path "$database_value" "./data/arcade-atlas.sqlite")"
   if [[ -f "$database_path" ]]; then
-    cp "$database_path" "$backup_dir/$(basename "$database_path")"
-    [[ -f "${database_path}-wal" ]] && cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
-    [[ -f "${database_path}-shm" ]] && cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
+    cp "$database_path" "$backup_dir/$(basename "$database_path")" 2>/dev/null || {
+      ensure_sudo
+      $SUDO cp "$database_path" "$backup_dir/$(basename "$database_path")"
+      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "$database_path")" 2>/dev/null || true
+    }
+    [[ -f "${database_path}-wal" ]] && cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || {
+      ensure_sudo
+      $SUDO cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
+      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || true
+    }
+    [[ -f "${database_path}-shm" ]] && cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || {
+      ensure_sudo
+      $SUDO cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
+      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || true
+    }
   fi
 
+  printf '%s\n' "$backup_dir"
+}
+
+backup_existing_installation() {
+  local backup_dir
+  backup_dir="$(create_backup_snapshot "$TARGET_DIR/.deploy/backups" "upgrade")"
   log "已创建升级备份：$backup_dir"
 }
 
@@ -1495,6 +1579,27 @@ stop_existing_node_service() {
   rm -f "$pid_file"
 }
 
+stop_node_service_for_cleanup() {
+  local pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
+  local env_file="$TARGET_DIR/.env"
+  local existing_pid=""
+  local port=""
+
+  [[ -f "$pid_file" ]] || return
+  existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+  port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
+  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+    if is_arcade_atlas_pid "$existing_pid" "$port"; then
+      log "重置 / 清理前正在停止 Node 服务进程：$existing_pid"
+      kill "$existing_pid" >/dev/null 2>&1 || true
+      wait_for_pid_exit "$existing_pid" 10 || kill -KILL "$existing_pid" >/dev/null 2>&1 || true
+    else
+      warn "检测到无法确认归属的 PID 文件，重置 / 清理时不会终止该进程：$existing_pid"
+    fi
+  fi
+  rm -f "$pid_file"
+}
+
 start_node_service() {
   local pid_file="$1"
   (
@@ -1566,19 +1671,485 @@ run_health_check() {
   if [[ -n "$response_body" ]]; then
     log "健康检查通过：$url"
     API_STATUS="正常"
+    HEALTH_CHECK_STATUS="healthy"
     if printf '%s' "$response_body" | grep -q '"initialized"[[:space:]]*:[[:space:]]*true'; then
       DATABASE_STATUS="正常"
     else
       DATABASE_STATUS="异常"
     fi
     SERVICE_STATUS="正常"
+    write_deployment_state_file
     return
   fi
 
+  HEALTH_CHECK_STATUS="failed"
   fail_step '健康检查失败。' \
     "失败地址：$url" \
     "如果是 Docker 部署，请执行：cd $TARGET_DIR && docker compose ps && docker compose logs --tail=200" \
     "如果是 Node 部署，请检查：$TARGET_DIR/.deploy/app.log"
+}
+
+deployment_state_file_path() {
+  printf '%s\n' "$TARGET_DIR/.deploy/deployment-state.env"
+}
+
+write_deployment_state_file() {
+  local state_file temp_file deployed_version
+  state_file="$(deployment_state_file_path)"
+  ensure_directory_available "$(dirname "$state_file")"
+  deployed_version="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
+  temp_file="$(mktemp)"
+  cat >"$temp_file" <<EOF
+DEPLOY_MODE=$MODE
+DEPLOY_STATUS=healthy
+DEPLOY_VERSION=$deployed_version
+TARGET_DIR=$TARGET_DIR
+UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+  mv "$temp_file" "$state_file"
+}
+
+detect_deployment_state_file_status() {
+  local state_file mode_value status_value version_value target_dir_value
+  state_file="$(deployment_state_file_path)"
+  DEPLOYMENT_STATE_FILE_STATUS="missing"
+  STATE_FILE_DEPLOY_MODE=""
+  STATE_FILE_DEPLOY_STATUS=""
+  STATE_FILE_DEPLOY_VERSION=""
+  STATE_FILE_TARGET_DIR=""
+
+  [[ -f "$state_file" ]] || return
+
+  mode_value="$(read_env_value "$state_file" "DEPLOY_MODE" 2>/dev/null || true)"
+  status_value="$(read_env_value "$state_file" "DEPLOY_STATUS" 2>/dev/null || true)"
+  version_value="$(read_env_value "$state_file" "DEPLOY_VERSION" 2>/dev/null || true)"
+  target_dir_value="$(read_env_value "$state_file" "TARGET_DIR" 2>/dev/null || true)"
+
+  STATE_FILE_DEPLOY_MODE="$mode_value"
+  STATE_FILE_DEPLOY_STATUS="$status_value"
+  STATE_FILE_DEPLOY_VERSION="$version_value"
+  STATE_FILE_TARGET_DIR="$target_dir_value"
+
+  case "$mode_value" in
+    docker|node) ;;
+    *)
+      DEPLOYMENT_STATE_FILE_STATUS="invalid"
+      return
+      ;;
+  esac
+
+  [[ "$status_value" == "healthy" ]] || {
+    DEPLOYMENT_STATE_FILE_STATUS="invalid"
+    return
+  }
+
+  [[ -n "$version_value" && -n "$target_dir_value" ]] || {
+    DEPLOYMENT_STATE_FILE_STATUS="invalid"
+    return
+  }
+
+  [[ "$target_dir_value" == "$TARGET_DIR" ]] || {
+    DEPLOYMENT_STATE_FILE_STATUS="invalid"
+    return
+  }
+
+  DEPLOYMENT_STATE_FILE_STATUS="present"
+}
+
+probe_health_check_response() {
+  local port="$1"
+  wait_for_health_check "$port" 3 2>/dev/null || true
+}
+
+detect_docker_command_for_runtime_probe() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    DOCKER_BIN=(docker)
+    return 0
+  fi
+
+  if [[ -n "$SUDO" ]] && $SUDO docker info >/dev/null 2>&1; then
+    DOCKER_BIN=("$SUDO" "docker")
+    return 0
+  fi
+
+  return 1
+}
+
+detect_existing_runtime_status() {
+  local pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
+  local existing_pid=""
+  local docker_status=""
+  local docker_known=0
+  local docker_running=0
+  local node_known=0
+  local node_running=0
+
+  RUNTIME_DEPLOY_MODE="none"
+  RUNTIME_SERVICE_STATUS="missing"
+  RUNTIME_STATUS_DETAILS="未检测到运行中的 Arcade Atlas 服务"
+
+  if detect_docker_command_for_runtime_probe; then
+    docker_status="$(get_docker_container_status)"
+    if [[ -n "$docker_status" ]]; then
+      docker_known=1
+      RUNTIME_STATUS_DETAILS="Docker: $docker_status"
+      case "$docker_status" in
+        running\ *)
+          docker_running=1
+          ;;
+      esac
+    fi
+  fi
+
+  if [[ -f "$pid_file" ]]; then
+    node_known=1
+    existing_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$existing_pid" ]] && is_arcade_atlas_pid "$existing_pid" "$(read_env_value "$TARGET_DIR/.env" "PORT" 2>/dev/null || true)"; then
+      node_running=1
+      if [[ "$RUNTIME_STATUS_DETAILS" == "未检测到运行中的 Arcade Atlas 服务" ]]; then
+        RUNTIME_STATUS_DETAILS="Node PID: $existing_pid"
+      else
+        RUNTIME_STATUS_DETAILS="$RUNTIME_STATUS_DETAILS; Node PID: $existing_pid"
+      fi
+    else
+      append_deployment_issue "检测到无效的 Node PID 文件：$pid_file"
+    fi
+  fi
+
+  if [[ "$docker_running" -eq 1 && "$node_running" -eq 1 ]]; then
+    RUNTIME_DEPLOY_MODE="mixed"
+    RUNTIME_SERVICE_STATUS="conflict"
+    append_deployment_issue '检测到 Docker 与 Node 服务同时存在，部署状态冲突。'
+    return
+  fi
+
+  if [[ "$docker_running" -eq 1 ]]; then
+    RUNTIME_DEPLOY_MODE="docker"
+    RUNTIME_SERVICE_STATUS="running"
+    case "$docker_status" in
+      running\ healthy|running\ none|running\ starting)
+        ;;
+      *)
+        append_deployment_issue "Docker 容器状态异常：$docker_status"
+        ;;
+    esac
+    return
+  fi
+
+  if [[ "$node_running" -eq 1 ]]; then
+    RUNTIME_DEPLOY_MODE="node"
+    RUNTIME_SERVICE_STATUS="running"
+    return
+  fi
+
+  if [[ "$docker_known" -eq 1 ]]; then
+    RUNTIME_DEPLOY_MODE="docker"
+    RUNTIME_SERVICE_STATUS="stopped"
+    append_deployment_issue "检测到 Docker 容器但未正常运行：${docker_status:-unknown}"
+    return
+  fi
+
+  if [[ "$node_known" -eq 1 ]]; then
+    RUNTIME_DEPLOY_MODE="node"
+    RUNTIME_SERVICE_STATUS="stopped"
+    append_deployment_issue '检测到 Node 部署痕迹，但服务未运行。'
+    return
+  fi
+
+  if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+    RUNTIME_DEPLOY_MODE="$STATE_FILE_DEPLOY_MODE"
+  fi
+  append_deployment_issue '项目目录存在，但未检测到 Arcade Atlas 服务。'
+}
+
+detect_existing_deployment_status() {
+  local env_file="$TARGET_DIR/.env"
+  local port=""
+  local health_body=""
+
+  clear_deployment_issues
+  DEPLOYMENT_STATUS_CLASS="fresh"
+  DEPLOYMENT_CONFIG_STATUS="missing"
+  HEALTH_CHECK_STATUS="unknown"
+
+  if [[ "$INSTALL_STATE" != "installed" ]]; then
+    return
+  fi
+
+  DEPLOYMENT_STATUS_CLASS="healthy"
+
+  if [[ "$PROJECT_DIR_STATUS" != "present" ]]; then
+    append_deployment_issue "项目目录状态异常：$PROJECT_DIR_STATUS"
+  fi
+
+  if [[ "$GIT_REPO_STATUS" == "not-a-repo" ]]; then
+    append_deployment_issue "项目目录不是 Git 仓库：$TARGET_DIR"
+  fi
+
+  if [[ -f "$env_file" ]]; then
+    DEPLOYMENT_CONFIG_STATUS="present"
+  else
+    append_deployment_issue "缺少部署配置文件：$env_file"
+  fi
+
+  detect_deployment_state_file_status
+  if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "invalid" ]]; then
+    append_deployment_issue "部署状态文件异常：$(deployment_state_file_path)"
+  fi
+
+  detect_existing_runtime_status
+
+  if [[ "$DEPLOYMENT_CONFIG_STATUS" == "present" && "$RUNTIME_SERVICE_STATUS" == "running" ]]; then
+    port="$(read_env_value "$env_file" "PORT" 2>/dev/null || true)"
+    if [[ -n "$port" ]] && [[ "$port" =~ ^[0-9]+$ ]]; then
+      health_body="$(probe_health_check_response "$port")"
+      if [[ -n "$health_body" ]]; then
+        HEALTH_CHECK_STATUS="healthy"
+        API_STATUS="正常"
+        if printf '%s' "$health_body" | grep -q '"initialized"[[:space:]]*:[[:space:]]*true'; then
+          DATABASE_STATUS="initialized"
+        else
+          DATABASE_STATUS="present"
+          append_deployment_issue 'health check 返回数据库未初始化。'
+        fi
+      else
+        HEALTH_CHECK_STATUS="failed"
+        API_STATUS="异常"
+        append_deployment_issue "health check 失败：http://127.0.0.1:${port}/health"
+      fi
+    else
+      HEALTH_CHECK_STATUS="failed"
+      append_deployment_issue '无法从 .env 读取有效的 PORT，无法执行 health check。'
+    fi
+  fi
+
+  if [[ "$DATABASE_STATUS" == "invalid" || "$DATABASE_STATUS" == "missing" ]]; then
+    append_deployment_issue "数据库状态异常：$DATABASE_STATUS"
+  fi
+
+  if [[ "$CURRENT_INSTALL_VERSION" == "未知" || "$CURRENT_INSTALL_VERSION" == "未安装" ]]; then
+    append_deployment_issue '未能识别当前安装版本。'
+  fi
+
+  if [[ "${#DEPLOYMENT_ISSUES[@]}" -gt 0 ]]; then
+    DEPLOYMENT_STATUS_CLASS="abnormal"
+  fi
+}
+
+remove_path_force() {
+  local target_path="$1"
+  [[ -e "$target_path" || -L "$target_path" ]] || return
+  rm -rf "$target_path" 2>/dev/null && return
+  ensure_sudo
+  $SUDO rm -rf "$target_path"
+}
+
+remove_arcade_atlas_docker_container() {
+  if ! detect_docker_command_for_runtime_probe; then
+    return
+  fi
+
+  if "${DOCKER_BIN[@]}" inspect arcade-atlas >/dev/null 2>&1; then
+    "${DOCKER_BIN[@]}" rm -f arcade-atlas >/dev/null 2>&1 || fail_step '删除 Arcade Atlas Docker 容器失败。' "容器名称：arcade-atlas"
+  fi
+}
+
+remove_arcade_atlas_docker_images() {
+  local image_ids=()
+  local image_id=""
+
+  if ! detect_docker_command_for_runtime_probe; then
+    return
+  fi
+
+  image_id="$("${DOCKER_BIN[@]}" inspect --format '{{.Image}}' arcade-atlas 2>/dev/null || true)"
+  if [[ -n "$image_id" ]]; then
+    image_ids+=("$image_id")
+  fi
+
+  while IFS= read -r image_id; do
+    [[ -n "$image_id" ]] && image_ids+=("$image_id")
+  done < <("${DOCKER_BIN[@]}" images --format '{{.Repository}} {{.ID}}' 2>/dev/null | awk '$1=="arcade-atlas-arcade-atlas"{print $2}')
+
+  if [[ "${#image_ids[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  printf '%s\n' "${image_ids[@]}" | awk 'NF && !seen[$0]++' | while IFS= read -r image_id; do
+    "${DOCKER_BIN[@]}" rmi -f "$image_id" >/dev/null 2>&1 || fail_step '删除 Arcade Atlas Docker 镜像失败。' "镜像 ID：$image_id"
+  done
+}
+
+show_reset_deployment_summary() {
+  local env_file="$TARGET_DIR/.env"
+  local data_path="$TARGET_DIR/data"
+  local database_path
+  database_path="$(resolve_env_path "$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)" "./data/arcade-atlas.sqlite")"
+
+  step '重置部署说明'
+  log "项目路径：$TARGET_DIR"
+  log "数据路径：$data_path"
+  log "数据库路径：$database_path"
+  log '删除：'
+  log "  - $TARGET_DIR/node_modules"
+  log "  - $TARGET_DIR/dist"
+  log "  - $TARGET_DIR/build（如果存在）"
+  log "  - $TARGET_DIR/.deploy"
+  log "  - Arcade Atlas Docker 容器"
+  log '保留：'
+  log "  - $TARGET_DIR/.env"
+  log "  - $TARGET_DIR/data"
+  log "  - $database_path"
+  log '重置部署不会删除业务数据。'
+}
+
+perform_reset_cleanup() {
+  stop_node_service_for_cleanup
+  remove_arcade_atlas_docker_container
+  remove_path_force "$TARGET_DIR/node_modules"
+  remove_path_force "$TARGET_DIR/dist"
+  remove_path_force "$TARGET_DIR/build"
+  remove_path_force "$TARGET_DIR/.deploy"
+}
+
+perform_reset_deployment() {
+  local backup_dir=""
+
+  show_reset_deployment_summary
+  confirm '确认执行重置部署并继续重新部署？' || fail_step '用户取消重置部署。'
+
+  backup_dir="$(create_backup_snapshot "$APP_BACKUP_ROOT" "reset")"
+  log "已创建重置备份：$backup_dir"
+  perform_reset_cleanup
+  log '重置完成，继续执行重新部署流程。'
+}
+
+verify_arcade_atlas_project_directory() {
+  local required_file
+
+  [[ -d "$TARGET_DIR" ]] || fail_step "目标目录不存在：$TARGET_DIR"
+  for required_file in package.json docker-compose.yml scripts/bootstrap-deploy.sh; do
+    [[ -e "$TARGET_DIR/$required_file" ]] || fail_step "缺少关键文件：$TARGET_DIR/$required_file"
+  done
+
+  python3 - "$TARGET_DIR/package.json" <<'PYTHON_VERIFY_PROJECT'
+import json
+import sys
+
+with open(sys.argv[1], 'r', encoding='utf-8') as handle:
+    payload = json.load(handle)
+
+if payload.get('name') != 'arcade-atlas':
+    raise SystemExit(1)
+PYTHON_VERIFY_PROJECT
+}
+
+perform_full_cleanup() {
+  local env_file="$TARGET_DIR/.env"
+  local data_path="$TARGET_DIR/data"
+  local database_path backup_dir=""
+  local backup_answer="n"
+  local confirmation=""
+
+  verify_arcade_atlas_project_directory || fail_step "目录校验失败：$TARGET_DIR"
+  database_path="$(resolve_env_path "$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)" "./data/arcade-atlas.sqlite")"
+
+  step '完全清理 Arcade Atlas'
+  log "项目目录：$TARGET_DIR"
+  log "配置文件：$env_file"
+  log "数据目录：$data_path"
+  log "数据库路径：$database_path"
+  log "部署状态文件：$(deployment_state_file_path)"
+  log "关键校验文件：$TARGET_DIR/package.json"
+  log "关键校验文件：$TARGET_DIR/docker-compose.yml"
+  log "关键校验文件：$TARGET_DIR/scripts/bootstrap-deploy.sh"
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    if [[ "$ASSUME_YES" -eq 1 ]]; then
+      backup_answer="y"
+    fi
+  else
+    read -r -p '完全清理前是否创建备份？ [y/N] ' backup_answer
+  fi
+
+  if [[ "$backup_answer" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+    backup_dir="$(create_backup_snapshot "$APP_BACKUP_ROOT" "cleanup")"
+    log "已创建清理前备份：$backup_dir"
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    fail_step '完全清理必须进行交互式二次确认。' '请在交互式终端中重新运行脚本。'
+  fi
+
+  read -r -p '请输入 DELETE ARCADE ATLAS 以确认完全清理: ' confirmation
+  [[ "$confirmation" == "DELETE ARCADE ATLAS" ]] || fail_step '二次确认失败，已取消完全清理。'
+
+  stop_node_service_for_cleanup
+  remove_arcade_atlas_docker_container
+  remove_arcade_atlas_docker_images
+  cd /
+  remove_path_force "$TARGET_DIR"
+  log 'Arcade Atlas 已完全清理，当前环境已恢复到未安装状态。'
+  exit 0
+}
+
+prompt_existing_installation_action() {
+  local choice=""
+
+  SELECTED_ACTION="upgrade"
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+      return
+    fi
+    fail_step '检测到异常部署，非交互模式不会自动删除或重置。' '请改用交互模式执行重置部署，或先手动修复现有环境。'
+  fi
+
+  if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+    cat <<'HEALTHY_DEPLOYMENT_MENU'
+
+当前部署状态：已安装且健康
+  [1] 升级当前版本
+  [2] 重置部署（保留业务数据）
+  [3] 完全清理 Arcade Atlas
+  [4] 退出
+HEALTHY_DEPLOYMENT_MENU
+  else
+    warn '检测到异常部署，建议执行重置部署恢复。'
+    for choice in "${DEPLOYMENT_ISSUES[@]}"; do
+      warn "  - $choice"
+    done
+    cat <<'ABNORMAL_DEPLOYMENT_MENU'
+
+当前部署状态：已安装但异常
+  [1] 重置部署
+  [2] 完全清理
+  [3] 退出
+ABNORMAL_DEPLOYMENT_MENU
+  fi
+
+  while true; do
+    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+      read -r -p '请输入 1-4: ' choice
+      case "$choice" in
+        1) SELECTED_ACTION="upgrade"; return ;;
+        2) SELECTED_ACTION="reset"; return ;;
+        3) SELECTED_ACTION="cleanup"; return ;;
+        4) SELECTED_ACTION="exit"; return ;;
+      esac
+    else
+      read -r -p '请输入 1-3: ' choice
+      case "$choice" in
+        1) SELECTED_ACTION="reset"; return ;;
+        2) SELECTED_ACTION="cleanup"; return ;;
+        3) SELECTED_ACTION="exit"; return ;;
+      esac
+    fi
+    warn '无效选择，请重新输入。'
+  done
 }
 
 show_final_summary() {
@@ -1639,19 +2210,35 @@ handle_existing_installation() {
     return
   fi
 
-  [[ "$GIT_REPO_STATUS" != "not-a-repo" ]] || fail_step "检测到已有项目目录，但目录不是 Git 仓库：$TARGET_DIR" "请先备份自定义文件后重新部署，或手动转换为 Git 仓库。"
+  prompt_existing_installation_action
 
-  if [[ "$LATEST_VERSION" != "未知" ]] && [[ "$CURRENT_INSTALL_VERSION" != "未安装" ]] && version_is_newer "$LATEST_VERSION" "$CURRENT_INSTALL_VERSION"; then
-    printf '当前版本：%s\n最新版本：%s\n' "$CURRENT_INSTALL_VERSION" "$LATEST_VERSION"
-    confirm '检测到新版本，是否升级？' || {
-      log '已取消升级，当前版本保持不变。'
+  case "$SELECTED_ACTION" in
+    exit)
+      log '已退出，当前环境保持不变。'
       exit 0
-    }
-  else
-    log '当前已安装版本已是最新，继续执行安全重建与健康检查。'
-  fi
+      ;;
+    cleanup)
+      perform_full_cleanup
+      ;;
+    reset)
+      perform_reset_deployment
+      ;;
+    upgrade)
+      if [[ "$LATEST_VERSION" != "未知" ]] && [[ "$CURRENT_INSTALL_VERSION" != "未安装" ]] && version_is_newer "$LATEST_VERSION" "$CURRENT_INSTALL_VERSION"; then
+        printf '当前版本：%s\n最新版本：%s\n' "$CURRENT_INSTALL_VERSION" "$LATEST_VERSION"
+        confirm '检测到新版本，是否升级？' || {
+          log '已取消升级，当前版本保持不变。'
+          exit 0
+        }
+      else
+        log '当前已安装版本已是最新，继续执行安全重建与健康检查。'
+      fi
+      backup_existing_installation
+      ;;
+  esac
 
-  backup_existing_installation
+  [[ "$GIT_REPO_STATUS" != "not-a-repo" ]] || fail_step "检测到已有项目目录，但目录不是 Git 仓库：$TARGET_DIR" "请先完成完全清理后重新部署，或手动恢复 Git 仓库。"
+
   if [[ "$SKIP_GIT_UPDATE" -eq 0 ]]; then
     step '拉取最新代码'
     update_repo_to_latest
@@ -1667,6 +2254,7 @@ main() {
   ensure_sudo
   ensure_base_commands
   detect_installation_state
+  detect_existing_deployment_status
   show_detection_summary
 
   step '准备项目代码'
