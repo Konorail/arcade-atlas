@@ -98,6 +98,7 @@
       PENDING: '🔴 报修中',
       PROCESSING: '🟡 处理中',
       RESOLVED: '🟢 已解决',
+      UNRESOLVED: '⚪ 历史未解决',
     }[status] || escapeHtml(status);
   }
 

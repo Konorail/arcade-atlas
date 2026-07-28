@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { AuthMode, ProviderConfig, authModeAllowsGithub, authModeAllowsLocal, config, getRedirectUri, parseAllowlist, serializeAllowlist } from './config';
-import { db, MachineStatus, MachineTypeStatus, RepairStatus, UserAuthType, UserStatus } from './db';
+import { db, MachineStatus, MachineTypeStatus, RepairStatus, UserAuthType, UserRole, UserStatus } from './db';
 
 export type User = {
   id: number;
@@ -14,6 +14,7 @@ export type User = {
   name: string;
   email: string | null;
   avatar: string | null;
+  role: UserRole;
   status: UserStatus;
   created_at: string;
   updated_at: string;
@@ -95,7 +96,7 @@ export type GithubOAuthSettings = {
 
 export type AuthSettingsView = {
   authMode: AuthMode;
-  localUsers: Array<Pick<User, 'id' | 'username' | 'name' | 'status'>>;
+  localUsers: Array<Pick<User, 'id' | 'username' | 'name' | 'role' | 'status'>>;
   github: {
     configured: boolean;
     clientId: string;
@@ -105,9 +106,11 @@ export type AuthSettingsView = {
   };
 };
 
-const repairStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED'];
+const repairStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED'];
+const repairTransitionStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED'];
 const machineStatuses: MachineStatus[] = ['normal', 'maintenance', 'disabled'];
 const machineTypeStatuses: MachineTypeStatus[] = ['active', 'inactive'];
+const userRoles: UserRole[] = ['user', 'repair', 'admin'];
 const githubProviderTemplate = {
   name: 'github' as const,
   displayName: 'GitHub',
@@ -280,10 +283,10 @@ export function getOAuthAllowlist(): Set<string> {
   return getGithubOAuthSettings()?.allowlist ?? new Set();
 }
 
-export function listLocalUsers(): Array<Pick<User, 'id' | 'username' | 'name' | 'status'>> {
+export function listLocalUsers(): Array<Pick<User, 'id' | 'username' | 'name' | 'role' | 'status'>> {
   return db
-    .prepare(`SELECT id, username, name, status FROM users WHERE auth_type = 'local' ORDER BY id ASC`)
-    .all() as Array<Pick<User, 'id' | 'username' | 'name' | 'status'>>;
+    .prepare(`SELECT id, username, name, role, status FROM users WHERE auth_type = 'local' ORDER BY id ASC`)
+    .all() as Array<Pick<User, 'id' | 'username' | 'name' | 'role' | 'status'>>;
 }
 
 export function isLocalLoginEnabled(): boolean {
@@ -296,20 +299,21 @@ export function findLocalUserByUsername(username: string): User | null {
   );
 }
 
-export function upsertLocalUser(input: { username: string; passwordHash: string; passwordSalt: string; name?: string }): User {
+export function upsertLocalUser(input: { username: string; passwordHash: string; passwordSalt: string; name?: string; role?: UserRole }): User {
   const username = requiredText(input.username, 'Local username', 80);
   const passwordHash = requiredText(input.passwordHash, 'Local password hash', 512);
   const passwordSalt = requiredText(input.passwordSalt, 'Local password salt', 512);
   const name = optionalText(input.name, 'User name', 80) ?? username;
+  const role = optionalStatus(input.role ?? 'admin', userRoles, 'user role');
   const timestamp = now();
   const existing = findLocalUserByUsername(username);
 
   if (existing) {
     db.prepare(
       `UPDATE users
-       SET auth_type = 'local', password_hash = ?, password_salt = ?, name = ?, status = 'active', updated_at = ?
+       SET auth_type = 'local', password_hash = ?, password_salt = ?, name = ?, role = ?, status = 'active', updated_at = ?
        WHERE id = ?`,
-    ).run(passwordHash, passwordSalt, name || existing.name, timestamp, existing.id);
+    ).run(passwordHash, passwordSalt, name || existing.name, role, timestamp, existing.id);
     return db.prepare(`SELECT * FROM users WHERE id = ?`).get(existing.id) as User;
   }
 
@@ -325,12 +329,13 @@ export function upsertLocalUser(input: { username: string; passwordHash: string;
         name,
         email,
         avatar,
+        role,
         status,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 'active', ?, ?)`,
+      ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?, 'active', ?, ?)`,
     )
-    .run('local', username, passwordHash, passwordSalt, name, timestamp, timestamp);
+    .run('local', username, passwordHash, passwordSalt, name, role, timestamp, timestamp);
 
   return db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid) as User;
 }
@@ -420,11 +425,13 @@ export function upsertOAuthUser(input: {
   name: string;
   email?: string | null;
   avatar?: string | null;
+  role?: UserRole;
 }): User {
   const timestamp = now();
   const name = requiredText(input.name, 'User name', 80);
   const email = optionalText(input.email, 'User email', 254);
   const avatar = optionalText(input.avatar, 'User avatar', 500);
+  const role = optionalStatus(input.role ?? 'user', userRoles, 'user role');
   const existing = db
     .prepare(`SELECT * FROM users WHERE oauth_provider = ? AND oauth_provider_user_id = ?`)
     .get(input.provider, input.providerUserId) as User | undefined;
@@ -451,12 +458,13 @@ export function upsertOAuthUser(input: {
          name,
          email,
          avatar,
+         role,
          status,
          created_at,
          updated_at
-       ) VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+       ) VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     )
-    .run('oauth', input.provider, input.providerUserId, name, email, avatar, timestamp, timestamp);
+    .run('oauth', input.provider, input.providerUserId, name, email, avatar, role, timestamp, timestamp);
 
   return db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid) as User;
 }
@@ -597,14 +605,13 @@ export function createMachine(input: Record<string, unknown>): Machine {
   const timestamp = now();
   const result = db
     .prepare(
-      `INSERT INTO machines (machine_type_id, name, machine_code, location, status, qr_token, description, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO machines (machine_type_id, name, machine_code, status, qr_token, description, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       machineTypeId,
       requiredText(input.name, '机台名称', 80),
       requiredText(input.machine_code, '机台编号', 64),
-      '',
       optionalStatus(input.status ?? 'normal', machineStatuses, 'machine status'),
       createQrToken(),
       optionalText(input.description, '描述', 1000),
@@ -686,7 +693,7 @@ export async function createQrCodeBuffer(machine: Machine): Promise<Buffer> {
 }
 
 export function listRepairs(filters: { machineId?: number; status?: string; query?: string; from?: string; to?: string } = {}): RepairRecord[] {
-  const conditions = ['repair_records.deleted_at IS NULL'];
+  const conditions = ['repair_records.deleted_at IS NULL', 'machines.deleted_at IS NULL'];
   const values: Array<number | string> = [];
 
   if (filters.machineId) {
@@ -735,7 +742,8 @@ export function getRepair(id: number): RepairRecord | null {
          JOIN machines ON machines.id = repair_records.machine_id
          JOIN machine_types ON machine_types.id = machines.machine_type_id
          WHERE repair_records.id = ?
-           AND repair_records.deleted_at IS NULL`,
+           AND repair_records.deleted_at IS NULL
+           AND machines.deleted_at IS NULL`,
       )
       .get(id) as RepairRecord | undefined) ?? null
   );
@@ -744,7 +752,14 @@ export function getRepair(id: number): RepairRecord | null {
 export function getRecentMachineRepairs(machineId: number, limit = 10): RepairRecord[] {
   return db
     .prepare(
-      `SELECT * FROM repair_records WHERE machine_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?`,
+      `SELECT repair_records.*
+       FROM repair_records
+       JOIN machines ON machines.id = repair_records.machine_id
+       WHERE repair_records.machine_id = ?
+         AND repair_records.deleted_at IS NULL
+         AND machines.deleted_at IS NULL
+       ORDER BY repair_records.created_at DESC
+       LIMIT ?`,
     )
     .all(machineId, limit) as RepairRecord[];
 }
@@ -772,7 +787,7 @@ export function updateRepairStatus(id: number, status: string): RepairRecord {
     throw new Error('Repair record not found.');
   }
 
-  const normalizedStatus = optionalStatus(status, repairStatuses, 'repair status');
+  const normalizedStatus = optionalStatus(status, repairTransitionStatuses, 'repair status');
   db.prepare(`UPDATE repair_records SET status = ?, updated_at = ? WHERE id = ?`).run(normalizedStatus, now(), id);
   return getRepair(id) as RepairRecord;
 }
@@ -795,10 +810,12 @@ export function listMaintenanceLogsForMachine(machineId: number, limit = 10): Ma
       `SELECT maintenance_logs.*, users.name AS operator_name
        FROM maintenance_logs
        JOIN repair_records ON repair_records.id = maintenance_logs.repair_record_id
+       JOIN machines ON machines.id = maintenance_logs.machine_id
        JOIN users ON users.id = maintenance_logs.operator_id
        WHERE maintenance_logs.machine_id = ?
         AND maintenance_logs.deleted_at IS NULL
         AND repair_records.deleted_at IS NULL
+        AND machines.deleted_at IS NULL
        ORDER BY maintenance_logs.created_at DESC
        LIMIT ?`,
     )
@@ -817,6 +834,7 @@ export function listMaintenanceLogsForRepair(repairId: number): MaintenanceLog[]
        WHERE maintenance_logs.repair_record_id = ?
         AND maintenance_logs.deleted_at IS NULL
         AND repair_records.deleted_at IS NULL
+        AND machines.deleted_at IS NULL
        ORDER BY maintenance_logs.created_at DESC`,
     )
     .all(repairId) as MaintenanceLog[];
@@ -833,6 +851,7 @@ export function listMaintenanceLogs(): MaintenanceLog[] {
        JOIN machine_types ON machine_types.id = machines.machine_type_id
        WHERE maintenance_logs.deleted_at IS NULL
         AND repair_records.deleted_at IS NULL
+        AND machines.deleted_at IS NULL
        ORDER BY maintenance_logs.created_at DESC`,
     )
     .all() as MaintenanceLog[];
@@ -850,7 +869,8 @@ export function getMaintenanceLog(id: number): MaintenanceLog | null {
         JOIN machine_types ON machine_types.id = machines.machine_type_id
         WHERE maintenance_logs.id = ?
           AND maintenance_logs.deleted_at IS NULL
-          AND repair_records.deleted_at IS NULL`,
+          AND repair_records.deleted_at IS NULL
+          AND machines.deleted_at IS NULL`,
       )
       .get(id) as MaintenanceLog | undefined) ?? null
   );
@@ -864,6 +884,7 @@ export function listRecentRepairs(limit = 15): RepairRecord[] {
        JOIN machines ON machines.id = repair_records.machine_id
        JOIN machine_types ON machine_types.id = machines.machine_type_id
        WHERE repair_records.deleted_at IS NULL
+         AND machines.deleted_at IS NULL
        ORDER BY repair_records.created_at DESC
        LIMIT ?`,
     )
@@ -880,6 +901,7 @@ export function listRecentMaintenanceLogs(limit = 15): MaintenanceLog[] {
        JOIN machines ON machines.id = maintenance_logs.machine_id
        WHERE maintenance_logs.deleted_at IS NULL
          AND repair_records.deleted_at IS NULL
+         AND machines.deleted_at IS NULL
        ORDER BY maintenance_logs.created_at DESC
        LIMIT ?`,
     )
@@ -911,7 +933,7 @@ export function createMaintenanceLog(repairId: number, operatorId: number, input
       timestamp,
     );
 
-  if (typeof input.repair_status === 'string' && repairStatuses.includes(input.repair_status as RepairStatus)) {
+  if (typeof input.repair_status === 'string' && repairTransitionStatuses.includes(input.repair_status as RepairStatus)) {
     updateRepairStatus(repairId, input.repair_status);
   }
 
@@ -970,6 +992,7 @@ export function getMachineHistory(id: number): MachineView | null {
 export function getStatusOptions() {
   return {
     repairStatuses,
+    repairTransitionStatuses,
     machineStatuses,
     machineTypeStatuses,
   };

@@ -16,9 +16,11 @@
   </dl>
   <div class="actions">
     <a class="button secondary" href="/admin/maintenance-logs">返回列表</a>
-    <form method="post" action="/admin/maintenance-logs/<%= maintenanceLog.id %>/delete" data-confirm="确认删除该维护记录吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
-      <button class="button danger" type="submit">删除维护记录</button>
-    </form>
+    <% if (currentUser.role === 'admin') { %>
+      <form method="post" action="/admin/maintenance-logs/<%= maintenanceLog.id %>/delete" data-confirm="确认删除该维护记录吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+        <button class="button danger" type="submit">删除维护记录</button>
+      </form>
+    <% } %>
   </div>
 </section>
 <%- include('partials/footer') %>

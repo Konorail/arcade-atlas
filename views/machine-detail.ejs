@@ -21,12 +21,10 @@
       </label>
       <label>描述<textarea name="description" rows="4"><%= machine.description || '' %></textarea></label>
       <label>备注<textarea name="notes" rows="3"><%= machine.notes || '' %></textarea></label>
-      <div class="actions">
-        <button class="button" type="submit">保存机台信息</button>
-        <form method="post" action="/admin/machines/<%= machine.id %>/delete" data-confirm="确认删除该机台吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
-          <button class="button danger" type="submit">删除机台</button>
-        </form>
-      </div>
+      <button class="button" type="submit">保存机台信息</button>
+    </form>
+    <form method="post" action="/admin/machines/<%= machine.id %>/delete" data-confirm="确认删除该机台吗？删除后不可恢复。" data-confirm-confirm-text="确认删除" data-confirm-cancel-text="返回">
+      <button class="button danger" type="submit">删除机台</button>
     </form>
   </article>
 

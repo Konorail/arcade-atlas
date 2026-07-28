@@ -68,6 +68,7 @@ const repairStatusLabels = {
   PENDING: '🔴 报修中',
   PROCESSING: '🟡 处理中',
   RESOLVED: '🟢 已解决',
+  UNRESOLVED: '⚪ 历史未解决',
 } as const;
 const machineTypeStatusLabels = {
   active: '启用',
@@ -76,6 +77,11 @@ const machineTypeStatusLabels = {
 const userStatusLabels = {
   active: '启用',
   disabled: '停用',
+} as const;
+const userRoleLabels = {
+  user: '普通用户',
+  repair: '维修人员',
+  admin: '管理员',
 } as const;
 const authEntryRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -130,6 +136,7 @@ app.use((request, response, next) => {
     repairStatusLabels,
     machineTypeStatusLabels,
     userStatusLabels,
+    userRoleLabels,
     machineStatusClass: (status: keyof typeof machineStatusLabels) => `status-badge machine-status machine-status-${status}`,
     repairStatusClass: (status: keyof typeof repairStatusLabels) => `status-badge repair-status repair-status-${status.toLowerCase()}`,
   };
@@ -143,21 +150,40 @@ function asyncHandler(handler: (request: Request, response: Response, next: Next
   };
 }
 
-function requireAdmin(request: Request, response: Response, next: NextFunction): void {
-  const user = getCurrentUser(request);
-  if (!user) {
-    if (wantsJson(request)) {
-      response.status(401).json({ error: 'Authentication required.' });
-      return;
-    }
-
-    response.redirect('/login');
+function rejectUnauthorized(request: Request, response: Response, message: string): void {
+  if (wantsJson(request)) {
+    response.status(403).json({ error: message });
     return;
   }
 
-  response.locals.currentUser = user;
-  next();
+  response.status(403).render('error', { message });
 }
+
+function requireRole(roles: readonly string[], message: string) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    const user = getCurrentUser(request);
+    if (!user) {
+      if (wantsJson(request)) {
+        response.status(401).json({ error: 'Authentication required.' });
+        return;
+      }
+
+      response.redirect('/login');
+      return;
+    }
+
+    if (!roles.includes(user.role)) {
+      rejectUnauthorized(request, response, message);
+      return;
+    }
+
+    response.locals.currentUser = user;
+    next();
+  };
+}
+
+const requireAdmin = requireRole(['admin'], '需要管理员权限。');
+const requireRepairOrAdmin = requireRole(['repair', 'admin'], '需要维修人员或管理员权限。');
 
 function parseId(value: string): number {
   const id = Number(value);
@@ -334,7 +360,7 @@ app.post(
   }),
 );
 
-app.get('/admin', requireAdmin, (_request, response) => {
+app.get('/admin', requireRepairOrAdmin, (_request, response) => {
   response.render('admin-dashboard', {
     machineTypes: listMachineTypes().length,
     machines: listMachines().length,
@@ -481,7 +507,7 @@ app.get('/admin/machines/:id/qr.png', requireAdmin, asyncHandler(async (request,
   response.send(buffer);
 }));
 
-app.get('/admin/repairs', requireAdmin, (request, response) => {
+app.get('/admin/repairs', requireRepairOrAdmin, (request, response) => {
   const machineId = typeof request.query.machine_id === 'string' && request.query.machine_id ? Number(request.query.machine_id) : undefined;
   response.render('repairs', {
     repairs: listRepairs({
@@ -496,7 +522,7 @@ app.get('/admin/repairs', requireAdmin, (request, response) => {
   });
 });
 
-app.get('/admin/repairs/:id', requireAdmin, (request, response) => {
+app.get('/admin/repairs/:id', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).render('error', { message: 'Repair record not found.' });
@@ -510,7 +536,7 @@ app.get('/admin/repairs/:id', requireAdmin, (request, response) => {
   });
 });
 
-app.post('/admin/repairs/:id/status', requireAdmin, (request, response) => {
+app.post('/admin/repairs/:id/status', requireRepairOrAdmin, (request, response) => {
   updateRepairStatus(parseId(routeParam(request.params.id, 'id')), String(request.body.status || ''));
   response.redirect(`/admin/repairs/${routeParam(request.params.id, 'id')}`);
 });
@@ -528,7 +554,7 @@ app.post('/admin/repairs/:id/delete', requireAdmin, (request, response) => {
   }
 });
 
-app.post('/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.post('/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const user = getCurrentUser(request);
   if (!user) {
     response.redirect('/login');
@@ -539,13 +565,13 @@ app.post('/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response
   response.redirect(`/admin/repairs/${routeParam(request.params.id, 'id')}`);
 });
 
-app.get('/admin/maintenance-logs', requireAdmin, (request, response) => {
+app.get('/admin/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   response.render('maintenance-logs', {
     maintenanceLogs: listMaintenanceLogs(),
   });
 });
 
-app.get('/admin/maintenance-logs/:id', requireAdmin, (request, response) => {
+app.get('/admin/maintenance-logs/:id', requireRepairOrAdmin, (request, response) => {
   const maintenanceLog = getMaintenanceLog(parseId(routeParam(request.params.id, 'id')));
   if (!maintenanceLog) {
     response.status(404).render('error', { message: 'Maintenance log not found.' });
@@ -678,7 +704,7 @@ app.post('/api/admin/machines/:id/regenerate-qr', requireAdmin, (request, respon
   }
 });
 
-app.get('/api/admin/repairs', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs', requireRepairOrAdmin, (request, response) => {
   const machineId = typeof request.query.machine_id === 'string' && request.query.machine_id ? Number(request.query.machine_id) : undefined;
   response.json({
     items: listRepairs({
@@ -691,7 +717,7 @@ app.get('/api/admin/repairs', requireAdmin, (request, response) => {
   });
 });
 
-app.get('/api/admin/repairs/:id', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs/:id', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).json({ error: 'Repair record not found.' });
@@ -709,7 +735,7 @@ app.delete('/api/admin/repairs/:id', requireAdmin, (request, response) => {
   }
 });
 
-app.patch('/api/admin/repairs/:id/status', requireAdmin, (request, response) => {
+app.patch('/api/admin/repairs/:id/status', requireRepairOrAdmin, (request, response) => {
   try {
     response.json({ repair: updateRepairStatus(parseId(routeParam(request.params.id, 'id')), String(request.body.status || '')) });
   } catch (error) {
@@ -717,7 +743,7 @@ app.patch('/api/admin/repairs/:id/status', requireAdmin, (request, response) => 
   }
 });
 
-app.get('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.get('/api/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const repair = getRepair(parseId(routeParam(request.params.id, 'id')));
   if (!repair) {
     response.status(404).json({ error: 'Repair record not found.' });
@@ -727,7 +753,7 @@ app.get('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, respo
   response.json({ items: listMaintenanceLogsForRepair(repair.id) });
 });
 
-app.post('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, response) => {
+app.post('/api/admin/repairs/:id/maintenance-logs', requireRepairOrAdmin, (request, response) => {
   const user = getCurrentUser(request);
   if (!user) {
     response.status(401).json({ error: 'Authentication required.' });
@@ -743,11 +769,11 @@ app.post('/api/admin/repairs/:id/maintenance-logs', requireAdmin, (request, resp
   }
 });
 
-app.get('/api/admin/maintenance-logs', requireAdmin, (_request, response) => {
+app.get('/api/admin/maintenance-logs', requireRepairOrAdmin, (_request, response) => {
   response.json({ items: listMaintenanceLogs() });
 });
 
-app.get('/api/admin/maintenance-logs/:id', requireAdmin, (request, response) => {
+app.get('/api/admin/maintenance-logs/:id', requireRepairOrAdmin, (request, response) => {
   const maintenanceLog = getMaintenanceLog(parseId(routeParam(request.params.id, 'id')));
   if (!maintenanceLog) {
     response.status(404).json({ error: 'Maintenance log not found.' });
