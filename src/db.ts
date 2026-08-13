@@ -233,15 +233,20 @@ function initializeSchema(): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_users_oauth_lookup ON users(oauth_provider, oauth_provider_user_id);
     CREATE INDEX IF NOT EXISTS idx_machines_type_id ON machines(machine_type_id);
-    CREATE INDEX IF NOT EXISTS idx_machines_deleted_at ON machines(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_machines_qr_token ON machines(qr_token);
     CREATE INDEX IF NOT EXISTS idx_repairs_machine_id_created_at ON repair_records(machine_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_repairs_status_created_at ON repair_records(status, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_repairs_deleted_at ON repair_records(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_logs_machine_id_created_at ON maintenance_logs(machine_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_logs_repair_id_created_at ON maintenance_logs(repair_record_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON maintenance_logs(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_hash ON admin_sessions(session_hash);
+  `);
+}
+
+function ensurePostMigrationIndexes(): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_machines_deleted_at ON machines(deleted_at);
+    CREATE INDEX IF NOT EXISTS idx_repairs_deleted_at ON repair_records(deleted_at);
+    CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON maintenance_logs(deleted_at);
   `);
 }
 
@@ -565,6 +570,7 @@ migrateMachinesDropLocation();
 migrateRepairRecordsStatusAndSoftDelete();
 migrateRepairRecordsAllowUnresolvedHistory();
 migrateMaintenanceLogsContentAndSoftDelete();
+ensurePostMigrationIndexes();
 
 export function closeDatabase(): void {
   db.close();

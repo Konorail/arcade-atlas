@@ -87,6 +87,21 @@ export type MachineView = {
   recentMaintenanceLogs: MaintenanceLog[];
 };
 
+export type PublicOverviewStats = {
+  machineTotal: number;
+  pendingRepairTotal: number;
+  currentMonthMaintenanceTotal: number;
+  previousMonthMaintenanceTotal: number;
+  maintenanceMonthChangePercent: number | null;
+  maintenanceMonthChangeText: string;
+};
+
+export type PublicOverview = {
+  stats: PublicOverviewStats;
+  recentRepairs: RepairRecord[];
+  recentMaintenanceLogs: MaintenanceLog[];
+};
+
 export type GithubOAuthSettings = {
   clientId: string;
   clientSecret: string;
@@ -108,6 +123,7 @@ export type AuthSettingsView = {
 
 const repairStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED', 'UNRESOLVED'];
 const repairTransitionStatuses: RepairStatus[] = ['PENDING', 'PROCESSING', 'RESOLVED'];
+const pendingRepairStatuses = repairTransitionStatuses.filter((status) => status !== 'RESOLVED');
 const machineStatuses: MachineStatus[] = ['normal', 'maintenance', 'disabled'];
 const machineTypeStatuses: MachineTypeStatus[] = ['active', 'inactive'];
 const userRoles: UserRole[] = ['user', 'repair', 'admin'];
@@ -912,6 +928,92 @@ export function listRecentMaintenanceLogs(limit = 15): MaintenanceLog[] {
        LIMIT ?`,
     )
     .all(limit) as MaintenanceLog[];
+}
+
+export function getPublicOverviewStats(referenceDate = new Date()): PublicOverviewStats {
+  const currentMonthStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
+  const nextMonthStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth() + 1, 1);
+  const previousMonthStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth() - 1, 1);
+  const pendingStatusPlaceholders = pendingRepairStatuses.map(() => '?').join(', ');
+  const totals = db
+    .prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM machines WHERE deleted_at IS NULL) AS machine_total,
+        (
+          SELECT COUNT(*)
+          FROM repair_records
+          JOIN machines ON machines.id = repair_records.machine_id
+          WHERE repair_records.deleted_at IS NULL
+            AND machines.deleted_at IS NULL
+            AND repair_records.status IN (${pendingStatusPlaceholders})
+        ) AS pending_repair_total,
+        (
+          SELECT COUNT(*)
+          FROM maintenance_logs
+          JOIN repair_records ON repair_records.id = maintenance_logs.repair_record_id
+          JOIN machines ON machines.id = maintenance_logs.machine_id
+          WHERE maintenance_logs.deleted_at IS NULL
+            AND repair_records.deleted_at IS NULL
+            AND machines.deleted_at IS NULL
+            AND maintenance_logs.created_at >= ?
+            AND maintenance_logs.created_at < ?
+        ) AS current_month_maintenance_total,
+        (
+          SELECT COUNT(*)
+          FROM maintenance_logs
+          JOIN repair_records ON repair_records.id = maintenance_logs.repair_record_id
+          JOIN machines ON machines.id = maintenance_logs.machine_id
+          WHERE maintenance_logs.deleted_at IS NULL
+            AND repair_records.deleted_at IS NULL
+            AND machines.deleted_at IS NULL
+            AND maintenance_logs.created_at >= ?
+            AND maintenance_logs.created_at < ?
+        ) AS previous_month_maintenance_total`,
+    )
+    .get(
+      ...pendingRepairStatuses,
+      currentMonthStart.toISOString(),
+      nextMonthStart.toISOString(),
+      previousMonthStart.toISOString(),
+      currentMonthStart.toISOString(),
+    ) as {
+    machine_total: number;
+    pending_repair_total: number;
+    current_month_maintenance_total: number;
+    previous_month_maintenance_total: number;
+  };
+
+  const maintenanceMonthChangePercent =
+    totals.previous_month_maintenance_total === 0
+      ? null
+      : Math.round(
+          ((totals.current_month_maintenance_total - totals.previous_month_maintenance_total) /
+            totals.previous_month_maintenance_total) *
+            100,
+        );
+  const maintenanceMonthChangeText =
+    maintenanceMonthChangePercent === null
+      ? '上月无记录'
+      : maintenanceMonthChangePercent === 0
+        ? '与上月持平'
+        : `较上月 ${maintenanceMonthChangePercent > 0 ? '+' : ''}${maintenanceMonthChangePercent}%`;
+
+  return {
+    machineTotal: totals.machine_total,
+    pendingRepairTotal: totals.pending_repair_total,
+    currentMonthMaintenanceTotal: totals.current_month_maintenance_total,
+    previousMonthMaintenanceTotal: totals.previous_month_maintenance_total,
+    maintenanceMonthChangePercent,
+    maintenanceMonthChangeText,
+  };
+}
+
+export function getPublicOverview(): PublicOverview {
+  return {
+    stats: getPublicOverviewStats(),
+    recentRepairs: listRecentRepairs(15),
+    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
+  };
 }
 
 export function createMaintenanceLog(repairId: number, operatorId: number, input: Record<string, unknown>): MaintenanceLog {

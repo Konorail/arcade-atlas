@@ -1,4 +1,10 @@
     </main>
+    <footer class="site-footer">
+      <div class="site-footer-inner">
+        <span>© <%= new Date().getFullYear() %> <%= appName %></span>
+        <span>让报修、维修与设备记录清晰可见</span>
+      </div>
+    </footer>
     <% if (flashMessage) { %>
       <div data-flash-toast="<%= flashMessage.text %>" data-flash-toast-type="<%= flashMessage.type %>"></div>
     <% } %>

@@ -1,250 +1,167 @@
 # Arcade Atlas
 
-轻量级机台管理与维修记录系统，围绕 **机台类型 → 具体机台 → 二维码 → 报修记录 → 维修日志** 建立完整维修历史。
+Arcade Atlas 是一个轻量级机台管理与维修记录系统，围绕“机台类型 → 具体机台 → 二维码 → 公开报修 → 状态流转 → 维修记录”保存可追溯历史。
 
-## 功能范围
+## 当前功能
 
-- 后台支持两种登录方式：
-  - 用户名 + 密码
-  - GitHub OAuth
-- 安装脚本会明确要求你二选一完成首次部署
-- 安装脚本支持首次安装、部署状态检测、版本检测、安全升级、重置部署、完全清理与健康检查
-- 空数据库首次使用 GitHub OAuth 登录时，首个用户会自动成为管理员，后续新 OAuth 用户默认为普通用户
-- 历史数据库补齐 RBAC 角色时遵循最小权限原则，不会批量把所有历史用户提升为管理员
-- 如果首次选择用户名 + 密码，部署完成后仍可在后台“认证设置”中补充并启用 GitHub OAuth
-- 每台具体机台自动生成唯一 QR Token，并支持下载/重置二维码
-- 首页可直接进入公开机台列表，按机台类型选择机台后提交报修
-- 访客扫码进入机台详情页后，无需登录即可查看最近记录并以 Toast 反馈提交结果
-- 首页会自动轮询最近 15 条报修记录与维修记录
-- 后台支持报修状态流转、维修日志追加、机台/报修/维护记录软删除与机台历史追踪
-- 服务端严格决定 `machine_id`、`repair_record_id`、`operator_id` 与时间字段
+- 本地用户名密码、GitHub OAuth 或两者并用的后台登录
+- `user` / `repair` / `admin` RBAC；机台和认证设置仅管理员可操作
+- 机台类型、机台、唯一 QR Token、二维码下载与重置
+- 扫码进入公共机台页、无需登录提交报修、查看近期记录
+- 报修状态流转：`PENDING` → `PROCESSING` → `RESOLVED`
+- 历史 `UNRESOLVED` 状态只保留展示，不允许作为新的流转目标
+- 维修记录、机台历史、软删除与关联历史保护
+- 首页展示真实机台总数、待处理报修、本月维修、较上月变化，以及最近 15 条报修和维修记录
+- `/health`、公共 API 与受 RBAC 保护的后台 API
 
-## 技术栈
+首页统计全部来自 SQLite：机台总数排除已软删除机台；待处理报修包含 `PENDING`、`PROCESSING`；月度维修按服务器本地自然月边界统计，并排除已软删除的机台、报修和维修记录。
 
-- Node.js + TypeScript
-- Express + EJS
-- SQLite（`better-sqlite3`）
-- `qrcode` 生成二维码图片
+## 运行基线
 
-## 本地运行
+- **Node.js 22.x**（当前发布验证基线）
+- npm 10（Node.js 22 官方自带版本即可）
+- SQLite，由锁文件中的 `better-sqlite3` 提供
+- Debian / Ubuntu 是一键部署脚本支持的 Linux 系统
 
-1. 复制环境变量：
+`better-sqlite3` 是原生模块。Linux 手工部署需要 `python3`、`make`、`g++`；仓库的 Dockerfile 和 Node 部署脚本会准备相应构建工具。不要在生产环境跳过依赖安装脚本。
+
+## 本地开发
+
+1. 安装 Node.js 22.x。
+2. 创建配置：
 
    ```bash
    cp .env.example .env
    ```
 
-2. 选择后台登录方式：
-
-   - **用户名 + 密码**
-     - 设置 `AUTH_MODE=local`
-     - 填写 `LOCAL_ADMIN_USERNAME`
-     - 将密码哈希和盐写入：
-       - `LOCAL_ADMIN_PASSWORD_HASH`
-       - `LOCAL_ADMIN_PASSWORD_SALT`
-     - 推荐直接运行部署脚本生成，不要手动写明文密码
-
-   - **GitHub OAuth**
-     - 设置 `AUTH_MODE=github`
-     - 填写 `GITHUB_CLIENT_ID`
-     - 填写 `GITHUB_CLIENT_SECRET`
-     - 填写 `OAUTH_ALLOWLIST`
-     - GitHub OAuth 回调地址固定为：
-
-       ```text
-       APP_URL/auth/github/callback
-       ```
-
-3. 安装依赖并启动开发环境：
+3. 至少配置一种认证方式。GitHub OAuth 见下文；本地登录需同时填写 `LOCAL_ADMIN_USERNAME`、`LOCAL_ADMIN_PASSWORD_HASH`、`LOCAL_ADMIN_PASSWORD_SALT`。部署脚本可以交互生成密码哈希，且不会保存明文密码。
+4. 安装、迁移并启动：
 
    ```bash
    npm ci
+   npm run build
+   npm run migrate
    npm run dev
    ```
 
-   如果你要按生产方式手动启动，请执行：
+生产方式启动：
 
-   ```bash
-   npm run build
-   npm run migrate
-   npm run start
-   ```
+```bash
+npm run build
+npm run migrate
+npm run start
+```
 
-4. 打开浏览器访问：
+默认地址：
 
-   - 首页：`http://localhost:3000/`
-   - 公开报修入口：`http://localhost:3000/repairs`
-   - 后台登录：`http://localhost:3000/login`
-   - 健康检查：`http://localhost:3000/health`
+- 首页：`http://localhost:3000/`
+- 公开报修入口：`http://localhost:3000/repairs`
+- 后台登录：`http://localhost:3000/login`
+- 健康检查：`http://localhost:3000/health`
 
-## 一键部署脚本
+`npm run dev` 和 `npm run start` 在加载数据库模块时也会执行幂等 migration，但正式部署仍应显式执行 `npm run migrate`，让失败发生在服务切换之前。
 
-推荐使用仓库提供的部署脚本：
+## 可用 npm 命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `npm run dev` | 使用 `tsx watch` 启动开发服务 |
+| `npm run lint` | TypeScript `--noEmit` 静态检查 |
+| `npm run build` | 编译 `src/` 到 `dist/` |
+| `npm run migrate` | 运行 `dist/db.js` 的数据库初始化与 migration |
+| `npm run start` | 运行 `dist/server.js` |
+
+项目当前没有 `npm test` 脚本。
+
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `APP_NAME` | 站点名称 | `Arcade Atlas` |
+| `APP_URL` | 对外完整根地址；用于二维码和 OAuth callback | `http://localhost:3000` |
+| `PORT` | HTTP 监听端口 | `3000` |
+| `DATABASE_PATH` | SQLite 文件；相对路径基于项目工作目录 | `./data/arcade-atlas.sqlite` |
+| `AUTH_MODE` | `local` / `github` / `both` | 无 GitHub 配置时为 `local` |
+| `LOCAL_ADMIN_USERNAME` | 本地管理员用户名 | 空 |
+| `LOCAL_ADMIN_PASSWORD_HASH` | scrypt 密码哈希（Base64） | 空 |
+| `LOCAL_ADMIN_PASSWORD_SALT` | scrypt 盐（Base64） | 空 |
+| `GITHUB_CLIENT_ID` | GitHub OAuth Client ID | 空 |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth Client Secret | 空 |
+| `OAUTH_ALLOWLIST` | 允许登录的 `github:用户ID`，逗号分隔 | 空 |
+| `ALLOW_FIRST_LOGIN` | 是否允许不在白名单中的 OAuth 用户首次建号 | `false` |
+
+相关变量必须成组配置。本地管理员三项缺任意一项、GitHub Client 两项缺任意一项，应用都会明确报错并停止。
+
+GitHub OAuth App 应配置：
+
+```text
+Homepage URL: APP_URL
+Authorization callback URL: APP_URL/auth/github/callback
+```
+
+白名单使用 GitHub 数字用户 ID，而不是用户名。空数据库中的首个获准 OAuth 用户会成为管理员；后续自动创建用户为普通用户。已有本地管理员会按相同用户名更新密码哈希，不会重置其他业务数据。
+
+## 数据库与 migration
+
+- 默认数据库：`./data/arcade-atlas.sqlite`
+- 启动时启用 WAL 与外键检查
+- `schema_migrations` 记录已执行 migration；重复运行具有幂等性
+- migration 会保留旧 OAuth 用户、RBAC、机台类型、机台、QR Token、报修、维修记录和 session
+- 旧字段只在已有 migration 中转换；无需手工修改数据库结构
+- 不要把正在使用的 SQLite 主文件当作普通文件热复制；使用部署脚本备份，或停服后连同数据库状态一起备份
+
+## 一键安装与升级
+
+从服务器直接运行（默认 Docker 模式）：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
 ```
 
-如果已经在仓库目录中：
+仓库已经存在时：
 
 ```bash
 bash ./scripts/bootstrap-deploy-local.sh --mode docker
+# 或使用脚本实际支持的 Node + nohup 模式
+bash ./scripts/bootstrap-deploy-local.sh --mode node
 ```
 
-脚本会按以下顺序执行：
+脚本只支持 Debian / Ubuntu，并使用 `set -euo pipefail`。它会检测安装状态、Git 状态、运行模式、health、部署状态文件和版本；保留现有 `.env`，只补充缺失键；升级前用 SQLite Backup API 创建一致性数据库快照并备份 `data/`；随后执行 build、停旧服务、migration、启动和严格 health 检查。
 
-1. 检测是否为首次安装、已安装且健康，或已安装但异常
-2. 输出 Git / Docker / Compose / `.env` / 数据库 / health check / 版本状态
-3. 已安装且健康时提供：升级 / 重置部署 / 完全清理 / 退出
-4. 已安装但异常时提示优先执行重置部署恢复
-5. 首次安装时生成 `.env` 并要求选择后台认证方式
-6. 检查 / 安装 Docker 或 Node.js 运行环境
-7. 升级前自动备份 `.env`、数据库文件与 `data/`
-8. 重置部署会先备份到 `/opt/arcade-atlas-backups/`，仅清理运行态文件，再继续重新部署
-9. 实际切换顺序固定为：停止旧服务 → 执行数据库 Migration → 启动服务 → 健康检查
-10. 输出版本、服务状态、访问地址与登录方式
+脚本以根目录 `VERSION` 识别代码版本，以 `.deploy/deployment-state.env` 记录已成功部署版本。存在未提交代码时拒绝自动 `git pull`。关键失败不会静默继续。
 
-如果检测到新版本，脚本会提示：
+升级命令、备份位置、重置/清理边界和回滚限制见 [DEPLOYMENT.md](./DEPLOYMENT.md)。仓库没有 systemd unit 或 PM2 配置；正式环境优先使用 Docker Compose，Node 模式仅使用脚本实现的 PID 文件与 `nohup`。
 
-```text
-当前版本：vX.Y.Z
-最新版本：vX.Y.Z
-检测到新版本，是否升级？ [y/N]
-```
+## 主要路由
 
-如果选择 `N`，脚本会保留当前环境不变并安全退出。
+公共页面和 API：
 
-Node 模式下，任何需要停止旧服务的确认都会发生在停止 `Arcade Atlas` 进程之前；如果用户取消，当前运行服务不会被影响。
-
-### 重置部署与完全清理
-
-- **重置部署**：保留 `.env`、`data/`、SQLite 数据库和业务数据，仅清理 `node_modules`、`dist`、`build`、`.deploy/`、PID / 日志与 `arcade-atlas` 容器，然后继续执行重新部署
-- **重置部署备份目录**：`/opt/arcade-atlas-backups/`
-- **完全清理**：仅删除 Arcade Atlas 自身代码、配置、数据目录、部署状态文件、容器和镜像，不会执行 `docker system prune`，也不会移除 Docker / Node.js / npm / 系统依赖
-- **完全清理前**：脚本会输出完整路径、校验目录签名文件，并要求输入 `DELETE ARCADE ATLAS` 进行二次确认
-
-### Docker Compose Plugin 安装说明
-
-脚本会先检查：
-
-- `docker` 是否存在
-- `docker compose version` 是否可用
-- 当前系统是否为 Debian / Ubuntu
-- `/etc/os-release` 中的 `VERSION_CODENAME`
-- Docker 官方 APT 源与 GPG Key 是否存在
-
-如果系统还没有 Compose Plugin，脚本会使用当前真实的 `VERSION_CODENAME` 动态添加 Docker 官方仓库，例如：
-
-```text
-https://download.docker.com/linux/debian ${VERSION_CODENAME} stable
-```
-
-不会写死 `bullseye`、`bookworm` 或其他版本名。
-
-## 关键环境变量
-
-- `APP_NAME`：站点名称
-- `APP_URL`：系统最终访问地址，用于二维码和 OAuth 回调
-- `PORT`：应用监听端口
-- `DATABASE_PATH`：SQLite 数据文件路径
-- `AUTH_MODE`：后台认证模式，支持 `local` / `github` / `both`
-- `LOCAL_ADMIN_USERNAME`：本地后台用户名
-- `LOCAL_ADMIN_PASSWORD_HASH`：本地后台密码哈希
-- `LOCAL_ADMIN_PASSWORD_SALT`：本地后台密码盐
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
-- `OAUTH_ALLOWLIST`：允许访问后台的 GitHub 用户列表，格式为 `github:用户ID`
-- `ALLOW_FIRST_LOGIN`：是否允许未在白名单内、且本地不存在的 GitHub 用户首次自动创建
-  - 空数据库下的首个 OAuth 用户会自动创建为 `admin`
-  - 后续自动创建的 OAuth 用户默认为 `user`
-  - 历史数据库迁移只会在缺少管理员时为最早用户补一个管理员，不会批量提权
-
-## 版本与升级
-
-- 仓库根目录的 `VERSION` 文件用于标记当前应用版本
-- `/health` 会返回当前版本、数据库初始化状态和基础服务检查结果
-- 升级时脚本不会覆盖现有 `.env`，会优先保留数据库与 `data/` 目录内容
-- Docker 模式会强制校验 `DATABASE_PATH` 是否落在容器可访问且持久化的 `./data/` 目录
-- 如果从旧的 Node 部署切换到 Docker，脚本会把仓库内 `data/` 目录下的旧绝对路径自动规范化为 `./data/...`
-- 如果 `DATABASE_PATH` 指向 Docker 容器外部不可持久化的位置，脚本会直接停止，避免静默创建新的空数据库
-
-## Node nohup 部署说明
-
-- 脚本的 Node 模式会使用 `nohup npm run start` 后台启动服务
-- PID 文件位置：`/opt/arcade-atlas/.deploy/arcade-atlas.pid`（本地仓库模式即 `<仓库目录>/.deploy/arcade-atlas.pid`）
-- 日志位置：`/opt/arcade-atlas/.deploy/app.log`（本地仓库模式即 `<仓库目录>/.deploy/app.log`）
-- 停止旧服务前，脚本会校验 PID 当前进程是否仍属于 Arcade Atlas；若无法确认，则拒绝 `kill`
-
-## Docker 数据目录
-
-- 宿主机持久化目录：`<仓库目录>/data`
-- 容器内挂载目录：`/app/data`
-- Docker 部署请保持 `DATABASE_PATH=./data/arcade-atlas.sqlite`，对应容器内实际路径 `/app/data/arcade-atlas.sqlite`
-
-## 后台认证设置
-
-部署完成后，进入后台可打开：
-
-- `GET /admin/auth-settings`
-
-你可以在这里：
-
-- 切换后台认证方式
-- 补充或修改 GitHub OAuth Client ID / Client Secret
-- 修改 GitHub 用户 ID 白名单
-- 在首次部署选择“用户名 + 密码”后，后续再启用 GitHub OAuth
-- Docker 部署修改认证配置后，请重启容器再让新配置生效
-
-## 主要路径
-
-### 前台
-
-- `GET /`
-- `GET /repairs`
-- `GET /machine/:token`
-- `POST /machine/:token/repairs`
+- `GET /`、`GET /login`、`GET /repairs`
+- `GET /machine/:token`、`POST /machine/:token/repairs`
 - `GET /api/public/overview`
 - `GET /api/machines/:token`
-- `GET /api/machines/:token/repairs`
-- `POST /api/machines/:token/repairs`
+- `GET|POST /api/machines/:token/repairs`
 - `GET /api/machines/:token/maintenance-logs`
 
-### 认证
+后台页面：
 
-- `GET /login`
-- `POST /login`
-- `GET /logout`
-- `GET /auth/:provider/redirect`
-- `GET /auth/:provider/callback`
-- `GET /admin/auth-settings`
-- `POST /admin/auth-settings`
+- `/admin`
+- `/admin/auth-settings`
+- `/admin/machine-types`、`/admin/machine-types/:id`
+- `/admin/machines`、`/admin/machines/:id`
+- `/admin/repairs`、`/admin/repairs/:id`
+- `/admin/maintenance-logs`、`/admin/maintenance-logs/:id`
 
-### 后台
+后台 API 使用对应的 `/api/admin/...` 路径并执行相同 RBAC。未知页面返回项目错误页，未知 API 返回 JSON 404。
 
-- `GET /admin`
-- `GET /admin/machine-types`
-- `GET /admin/machines`
-- `GET /admin/repairs`
-- `GET /admin/maintenance-logs`
-- `GET /admin/maintenance-logs/:id`
-- `GET /api/admin/machine-types`
-- `POST /api/admin/machine-types`
-- `PATCH /api/admin/machine-types/:id`
-- `GET /api/admin/machines`
-- `POST /api/admin/machines`
-- `GET /api/admin/machines/:id`
-- `PATCH /api/admin/machines/:id`
-- `DELETE /api/admin/machines/:id`
-- `POST /api/admin/machines/:id/regenerate-qr`
-- `GET /api/admin/repairs`
-- `GET /api/admin/repairs/:id`
-- `PATCH /api/admin/repairs/:id/status`
-- `DELETE /api/admin/repairs/:id`
-- `GET /api/admin/repairs/:id/maintenance-logs`
-- `POST /api/admin/repairs/:id/maintenance-logs`
-- `GET /api/admin/maintenance-logs`
-- `GET /api/admin/maintenance-logs/:id`
-- `DELETE /api/admin/maintenance-logs/:id`
+## 常见问题
 
-## 部署说明
+- **`EBADENGINE`**：确认 `node -v` 为 `v22.x`，不要用未经本发布流程验证的主版本。
+- **`better-sqlite3` / `node-gyp` 安装失败**：Linux 安装 `build-essential python3`；Windows 本地开发需要 Visual Studio 的“Desktop development with C++”，或使用 Docker。
+- **health 返回 503**：检查 `DATABASE_PATH`、目录权限和 migration；数据库未完整初始化不会被视为健康。
+- **OAuth callback 失败**：确认 `APP_URL` 与 GitHub OAuth App 完全一致，并检查数字用户 ID 白名单。
+- **后台被重定向到 `/login`**：session 无效或未登录；403 表示已登录但 RBAC 角色不足。
+- **Docker 重建后出现空库**：确认 `DATABASE_PATH=./data/arcade-atlas.sqlite` 且 `./data:/app/data` 挂载存在，不要把数据库指向容器未持久化路径。
+- **端口被占用**：修改 `.env` 的 `PORT`，并同步反向代理 upstream。
 
-完整部署文档见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+正式部署、HTTPS、Nginx、日志、备份、更新与回滚请阅读 [DEPLOYMENT.md](./DEPLOYMENT.md)。

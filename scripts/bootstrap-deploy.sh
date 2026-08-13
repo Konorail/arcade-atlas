@@ -558,7 +558,7 @@ create_backup_snapshot() {
   local backup_root="$1"
   local label="$2"
   local env_file="$TARGET_DIR/.env"
-  local database_value database_path backup_dir timestamp
+  local database_value database_path backup_dir timestamp database_backup_path database_relative_path
   timestamp="$(date +%Y%m%d-%H%M%S)"
   backup_dir="$backup_root/${label}-${timestamp}"
   ensure_directory_available "$backup_dir"
@@ -578,25 +578,64 @@ create_backup_snapshot() {
   database_value="$(read_env_value "$env_file" "DATABASE_PATH" 2>/dev/null || true)"
   database_path="$(resolve_env_path "$database_value" "./data/arcade-atlas.sqlite")"
   if [[ -f "$database_path" ]]; then
-    cp "$database_path" "$backup_dir/$(basename "$database_path")" 2>/dev/null || {
+    if [[ "$(path_is_within "$TARGET_DIR/data" "$database_path")" == "1" ]]; then
+      database_relative_path="$(path_relative_to "$TARGET_DIR/data" "$database_path")"
+      database_backup_path="$backup_dir/data/$database_relative_path"
+    else
+      database_backup_path="$backup_dir/$(basename "$database_path")"
+    fi
+    [[ "$(path_is_within "$backup_dir" "$database_backup_path")" == "1" ]] \
+      || fail_step "数据库备份路径超出备份目录，已停止：$database_backup_path"
+    ensure_directory_available "$(dirname "$database_backup_path")"
+    rm -f "$database_backup_path" "${database_backup_path}-wal" "${database_backup_path}-shm" 2>/dev/null || {
       ensure_sudo
-      $SUDO cp "$database_path" "$backup_dir/$(basename "$database_path")"
-      $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "$database_path")" 2>/dev/null || true
+      $SUDO rm -f "$database_backup_path" "${database_backup_path}-wal" "${database_backup_path}-shm"
     }
-    if [[ -f "${database_path}-wal" ]]; then
-      cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || {
-        ensure_sudo
-        $SUDO cp "${database_path}-wal" "$backup_dir/$(basename "${database_path}-wal")"
-        $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-wal")" 2>/dev/null || true
-      }
+
+    if ! python3 - "$database_path" "$database_backup_path" <<'PYTHON_SQLITE_BACKUP'
+import sqlite3
+import sys
+
+source_path, destination_path = sys.argv[1:3]
+source = sqlite3.connect(source_path, timeout=30)
+destination = sqlite3.connect(destination_path, timeout=30)
+try:
+    source.execute('PRAGMA busy_timeout = 30000')
+    source.backup(destination)
+    result = destination.execute('PRAGMA integrity_check').fetchone()
+    if not result or result[0] != 'ok':
+        raise RuntimeError(f'SQLite integrity_check failed: {result!r}')
+    destination.execute('PRAGMA journal_mode = DELETE')
+finally:
+    destination.close()
+    source.close()
+PYTHON_SQLITE_BACKUP
+    then
+      ensure_sudo
+      $SUDO rm -f "$database_backup_path" "${database_backup_path}-wal" "${database_backup_path}-shm"
+      $SUDO python3 - "$database_path" "$database_backup_path" <<'PYTHON_SQLITE_BACKUP_SUDO'
+import sqlite3
+import sys
+
+source_path, destination_path = sys.argv[1:3]
+source = sqlite3.connect(source_path, timeout=30)
+destination = sqlite3.connect(destination_path, timeout=30)
+try:
+    source.execute('PRAGMA busy_timeout = 30000')
+    source.backup(destination)
+    result = destination.execute('PRAGMA integrity_check').fetchone()
+    if not result or result[0] != 'ok':
+        raise RuntimeError(f'SQLite integrity_check failed: {result!r}')
+    destination.execute('PRAGMA journal_mode = DELETE')
+finally:
+    destination.close()
+    source.close()
+PYTHON_SQLITE_BACKUP_SUDO
+      $SUDO chown "$(id -u):$(id -g)" "$database_backup_path" 2>/dev/null || true
     fi
-    if [[ -f "${database_path}-shm" ]]; then
-      cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || {
-        ensure_sudo
-        $SUDO cp "${database_path}-shm" "$backup_dir/$(basename "${database_path}-shm")"
-        $SUDO chown "$(id -u):$(id -g)" "$backup_dir/$(basename "${database_path}-shm")" 2>/dev/null || true
-      }
-    fi
+
+    rm -f "${database_backup_path}-wal" "${database_backup_path}-shm"
+    printf '%s\n' "$database_path" >"$backup_dir/database-source-path.txt"
   fi
 
   printf '%s\n' "$backup_dir"
@@ -770,7 +809,9 @@ wait_for_health_check() {
 
   for ((_remaining = attempts; _remaining > 0; _remaining--)); do
     response_body="$(curl -fsS "$url" 2>/dev/null || true)"
-    if [[ -n "$response_body" ]]; then
+    if [[ -n "$response_body" ]] \
+      && printf '%s' "$response_body" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' \
+      && printf '%s' "$response_body" | grep -q '"initialized"[[:space:]]*:[[:space:]]*true'; then
       printf '%s' "$response_body"
       return 0
     fi
@@ -1245,12 +1286,18 @@ install_node_runtime() {
     node_major="$(node -p "process.versions.node.split('.')[0]")"
   fi
 
-  if [[ -n "$node_major" && "$node_major" -ge 22 ]]; then
+  if [[ "$node_major" == "22" ]]; then
+    require_command npm
     log "Node.js 版本满足要求：$(node -v)"
     return
   fi
 
-  warn '当前 Node.js 不存在或版本低于 22。'
+  if [[ -n "$node_major" && "$node_major" -gt 22 ]]; then
+    fail_step "检测到未经本项目部署流程验证的 Node.js 主版本：$(node -v)" \
+      '当前发布基线固定为 Node.js 22.x；请切换到 Node.js 22，或使用仓库提供的 Docker 部署。'
+  fi
+
+  warn '当前 Node.js 不存在或不是 Node.js 22.x。'
   confirm '将安装 Node.js 22 LTS，这可能更新系统中的 node/npm，是否继续？' || fail_step '用户取消安装 Node.js。'
   ensure_sudo
   if ! curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -; then
@@ -1261,6 +1308,8 @@ install_node_runtime() {
   fi
   require_command node
   require_command npm
+  node_major="$(node -p "process.versions.node.split('.')[0]")"
+  [[ "$node_major" == "22" ]] || fail_step "Node.js 安装完成后版本仍不符合 22.x 要求：$(node -v)"
 }
 
 set_docker_command() {
@@ -1619,18 +1668,18 @@ restore_node_service_after_failed_migration() {
 
   [[ "$PREVIOUS_NODE_SERVICE_RUNNING" -eq 1 ]] || return 1
 
-  warn '数据库 Migration 失败，正在尝试恢复之前的 Node 服务。'
+  warn '数据库 Migration 失败，正在尝试用当前已准备的代码重新启动 Node 服务；这不是代码版本回滚。'
   if ! start_node_service "$pid_file"; then
-    warn '重新启动旧的 Node 服务失败。'
+    warn 'Migration 失败后重新启动 Node 服务失败。'
     return 1
   fi
 
   if wait_for_health_check "$port" 10 >/dev/null; then
-    log '已恢复之前的 Node 服务。'
+    log 'Migration 失败后 Node 服务已重新启动并通过健康检查；仍请核对数据库和当前代码版本。'
     return 0
   fi
 
-  warn '旧的 Node 服务恢复后未通过健康检查。'
+  warn 'Migration 失败后 Node 服务未通过健康检查。'
   return 1
 }
 
@@ -1901,6 +1950,9 @@ detect_existing_deployment_status() {
   fi
 
   detect_deployment_state_file_status
+  if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+    CURRENT_INSTALL_VERSION="$STATE_FILE_DEPLOY_VERSION"
+  fi
   if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "invalid" ]]; then
     append_deployment_issue "部署状态文件异常：$(deployment_state_file_path)"
   fi

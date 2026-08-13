@@ -1,7 +1,10 @@
 <%- include('partials/header', { title: '错误' }) %>
-<section class="panel stack narrow">
-  <h1>请求失败</h1>
+<section class="panel stack narrow error-shell" data-reveal>
+  <div class="error-heading">
+    <span class="eyebrow">Request interrupted</span>
+    <h1>请求失败</h1>
+  </div>
   <p class="error"><%= message %></p>
-  <a class="button secondary" href="javascript:history.back()">返回上一页</a>
+  <button class="button secondary" type="button" data-history-back>返回上一页</button>
 </section>
 <%- include('partials/footer') %>

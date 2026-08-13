@@ -34,13 +34,12 @@ import {
   getMachineType,
   getMachineViewByToken,
   getMaintenanceLog,
+  getPublicOverview,
   getRepair,
   getStatusOptions,
   isLocalLoginEnabled,
   listMaintenanceLogs,
   listPublicMachines,
-  listRecentMaintenanceLogs,
-  listRecentRepairs,
   listMachineTypes,
   listMachines,
   listMaintenanceLogsForRepair,
@@ -202,7 +201,7 @@ function routeParam(value: string | string[] | undefined, name: string): string 
 }
 
 function wantsJson(request: Request): boolean {
-  return request.path.startsWith('/api/') || request.accepts(['json', 'html']) === 'json';
+  return request.path.startsWith('/api/') || request.accepts(['html', 'json']) === 'json';
 }
 
 function formatDateTime(value: string): string {
@@ -234,7 +233,15 @@ function groupMachinesByCategory() {
 }
 
 function respondError(request: Request, response: Response, error: unknown, statusCode = 400): void {
-  const message = error instanceof Error ? error.message : 'Unexpected error.';
+  const message =
+    statusCode >= 500
+      ? '服务器内部错误。'
+      : error instanceof Error
+        ? error.message
+        : 'Unexpected error.';
+  if (statusCode >= 500) {
+    console.error(error);
+  }
   if (wantsJson(request)) {
     response.status(statusCode).json({ error: message });
     return;
@@ -250,7 +257,7 @@ function redirectWithMessage(response: Response, targetPath: string, message: st
 
 app.get('/health', (_request, response) => {
   const database = getDatabaseHealth();
-  response.json({
+  response.status(database.initialized ? 200 : 503).json({
     status: database.initialized ? 'ok' : 'degraded',
     app: config.appName,
     version: config.appVersion,
@@ -265,10 +272,7 @@ app.get('/health', (_request, response) => {
 });
 
 app.get('/', (_request, response) => {
-  response.render('home', {
-    recentRepairs: listRecentRepairs(15),
-    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
-  });
+  response.render('home', getPublicOverview());
 });
 
 app.get('/repairs', (_request, response) => {
@@ -632,10 +636,7 @@ app.get('/api/machines/:token/maintenance-logs', (request, response) => {
 });
 
 app.get('/api/public/overview', (_request, response) => {
-  response.json({
-    recentRepairs: listRecentRepairs(15),
-    recentMaintenanceLogs: listRecentMaintenanceLogs(15),
-  });
+  response.json(getPublicOverview());
 });
 
 app.get('/api/admin/machine-types', requireAdmin, (_request, response) => {
@@ -791,8 +792,17 @@ app.delete('/api/admin/maintenance-logs/:id', requireAdmin, (request, response) 
   }
 });
 
+app.use((request, response) => {
+  if (wantsJson(request)) {
+    response.status(404).json({ error: 'Not found.' });
+    return;
+  }
+
+  response.status(404).render('error', { message: '页面不存在。' });
+});
+
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
-  const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+  const statusCode = error instanceof Error && error.message.toLowerCase().includes('not found') ? 404 : 500;
   respondError(request, response, error, statusCode);
 });
 

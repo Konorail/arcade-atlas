@@ -1,7 +1,10 @@
 <%- include('partials/header', { title: '后台登录' }) %>
-<section class="panel stack narrow">
-  <h1>后台登录</h1>
-  <p class="muted">当前认证方式：<code><%= authMode %></code></p>
+<section class="panel stack narrow auth-shell" data-reveal>
+  <div class="auth-heading">
+    <span class="eyebrow">Secure access</span>
+    <h1>后台登录</h1>
+    <p class="muted">当前认证方式：<code><%= authMode %></code></p>
+  </div>
 
   <% if (errorMessage) { %>
     <p class="error"><%= errorMessage %></p>

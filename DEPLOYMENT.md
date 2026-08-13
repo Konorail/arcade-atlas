@@ -1,77 +1,59 @@
-# Arcade Atlas 部署说明
+# Arcade Atlas 正式部署说明
 
-本文档说明如何在 Debian / Ubuntu 上部署 Arcade Atlas，并重点说明首次安装、部署状态检测、版本升级、重置部署、完全清理、后台认证、Docker 安装与 Docker Compose Plugin 兼容逻辑。
+本文档以 Debian / Ubuntu 正式环境为目标。推荐 Docker Compose；仓库同时支持 Node.js 22 + `nohup`。仓库没有 systemd unit、PM2 配置或独立前端打包器，因此不要使用不存在的命令或假定存在 `build/` 前端产物。
 
----
+## 1. 发布基线与目录
 
-## 一、支持的部署方式
+- Node.js：**22.x**，当前已验证版本为 22.23.2
+- npm：Node.js 22 自带 npm 10
+- `better-sqlite3`：以 `package-lock.json` 锁定版本为准；当前包要求 Node `>=22`
+- 应用入口：`dist/server.js`
+- migration 入口：`dist/db.js`
+- 模板：`views/`
+- 静态资源：`public/`
+- 默认数据库：`data/arcade-atlas.sqlite`
+- 默认端口：`3000`
 
-1. **Docker Compose 一键部署**（推荐）
-2. **Node.js 手动部署**
+Node.js 22 仍处于官方 LTS 支持周期。`better-sqlite3` 为原生模块；其发行包包含常见 LTS 平台预编译文件，但部署仍应准备编译工具，以覆盖当前平台没有可用预编译文件的情况。Dockerfile 安装 `python3 make g++`，Node 脚本安装 `build-essential python3`。
 
----
+应用使用 `process.cwd()` 解析 `dist/`、`views/`、`public/`、`.env` 和相对数据库路径。所有手工命令必须在仓库根目录执行。
 
-## 二、后台认证方式
+## 2. Linux 准备
 
-安装时脚本会明确要求你选择其中一种：
+一键脚本支持带 `apt` 的 Debian / Ubuntu。手工 Node 部署先安装：
 
-1. **用户名 + 密码登录**
-2. **GitHub OAuth 登录**
-
-### 1. 用户名 + 密码登录
-
-部署脚本会：
-
-- 询问后台用户名
-- 以不回显的方式询问后台密码
-- 仅把密码哈希与盐写入 `.env`
-- 不会把明文密码输出到终端
-- 不会把真实密码写入 Git 仓库
-
-部署完成后，直接使用该用户名和密码访问：
-
-```text
-APP_URL/login
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git build-essential python3
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v
+npm -v
 ```
 
-### 2. GitHub OAuth 登录
+`node -v` 必须为 `v22.x`。脚本不会接受更高但未经当前发布流程验证的主版本；此时请切换 Node 版本或使用 Docker。
 
-脚本会直接告诉你要填写：
+Docker 部署使用 Docker 官方 APT 仓库。脚本会读取真实 `VERSION_CODENAME`，安装 `docker-ce`、CLI、containerd、Buildx 与 Compose Plugin，并验证 `docker compose version`。仅支持 Docker 官方仓库已经发布对应代号的 Debian / Ubuntu。
 
-- Homepage URL：`APP_URL`
-- Authorization callback URL：`APP_URL/auth/github/callback`
-- GitHub Client ID 的用途
-- GitHub Client Secret 的用途
-- GitHub 用户 ID 白名单的填写方式
+## 3. 获取代码
 
-> 这里填写的是 GitHub 用户 **ID**，不是 GitHub 用户名。  
-> 可访问 `https://api.github.com/users/你的GitHub用户名`，查看返回 JSON 中的 `id` 字段。
-
-### 3. 安装后再启用 GitHub OAuth
-
-如果首次部署选择了“用户名 + 密码”，仍然可以在部署完成后进入后台：
-
-```text
-/admin/auth-settings
+```bash
+sudo mkdir -p /opt/arcade-atlas
+sudo chown "$USER:$USER" /opt/arcade-atlas
+git clone https://github.com/Konorail/arcade-atlas.git /opt/arcade-atlas
+cd /opt/arcade-atlas
 ```
 
-在这里补充 GitHub OAuth 配置并切换为：
+升级时只使用 fast-forward 更新。目录有未提交改动时，一键脚本会拒绝自动拉取，以免覆盖本地文件。
 
-- `local`
-- `github`
-- `both`
+## 4. 环境变量
 
-也就是说，首次认证方式与后续 OAuth 启用已经解耦。
+```bash
+cp .env.example .env
+chmod 600 .env
+```
 
-如果是 Docker 部署，后台保存认证配置后，请重启容器再让新配置生效。
-
-首次使用 GitHub OAuth 登录且数据库为空时，首个 OAuth 用户会自动创建为管理员；后续新增的 OAuth 用户默认创建为普通用户。历史数据库在补齐 RBAC 角色时也只会在缺少管理员时为最早用户补一个管理员，不会把所有历史用户批量提升为管理员。
-
----
-
-## 三、关键环境变量
-
-`.env.example` 已与实际代码保持一致：
+模板包含：
 
 ```env
 APP_NAME=Arcade Atlas
@@ -88,331 +70,330 @@ OAUTH_ALLOWLIST=
 ALLOW_FIRST_LOGIN=false
 ```
 
-说明：
+正式环境必须修改 `APP_URL` 为最终 HTTPS 根地址，不带结尾斜杠。`DATABASE_PATH` 的相对路径基于仓库根目录。
 
-- `AUTH_MODE`：`local` / `github` / `both`
-- `LOCAL_ADMIN_USERNAME`：本地后台用户名
-- `LOCAL_ADMIN_PASSWORD_HASH` / `LOCAL_ADMIN_PASSWORD_SALT`：本地后台密码哈希配置
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth 配置
-- `OAUTH_ALLOWLIST`：允许登录后台的 GitHub 用户列表，例如：`github:123456,github:789012`
-- `ALLOW_FIRST_LOGIN`：只影响 GitHub OAuth 首次登录自动建号逻辑
-  - 空数据库下首个 OAuth 用户自动成为 `admin`
-  - 后续 OAuth 自动建号默认是 `user`
-  - 历史数据库迁移只会在缺少管理员时为最早用户补一个管理员，不会批量提权
-- Docker 部署必须保持 `DATABASE_PATH` 位于仓库的 `./data/` 持久化目录下；推荐值为 `./data/arcade-atlas.sqlite`，容器工作目录是 `/app`，实际会落到 `/app/data/arcade-atlas.sqlite`
+认证模式：
 
-`.env` 已被 `.gitignore` 忽略；`.env.example` 仅保留占位符，不包含真实密钥。
+- `local`：本地管理员三项必须同时设置
+- `github`：GitHub Client ID 和 Secret 必须同时设置
+- `both`：两组配置都必须有效
 
----
+一键脚本会交互生成本地密码的 scrypt 哈希/盐，只把 Base64 结果写入 `.env`，不保存明文。已有 `.env` 不会被模板覆盖；脚本只追加模板中缺失的键，并保留管理员和 OAuth 配置。
 
-## 四、Docker / Docker Compose Plugin 安装逻辑
-
-部署脚本会按下面顺序执行：
-
-1. 检查当前系统是否为 Debian / Ubuntu
-2. 读取 `/etc/os-release`
-3. 读取 `VERSION_CODENAME`
-4. 检查项目目录、Git 仓库、`.env`、数据库、当前安装版本
-5. 检查 `docker` 是否已安装
-6. 检查 `docker compose version` 是否已可用
-7. 如果 Plugin 不可用，则动态添加 Docker 官方仓库
-8. 安装：
-   - `docker-ce`
-   - `docker-ce-cli`
-   - `containerd.io`
-   - `docker-buildx-plugin`
-   - `docker-compose-plugin`
-9. 安装完成后再次验证 `docker compose version`
-
-### 1. 仓库地址生成规则
-
-不会写死 `bullseye`、`bookworm`、`trixie`。
-
-脚本会动态生成：
+GitHub OAuth App：
 
 ```text
-https://download.docker.com/linux/<debian-or-ubuntu> ${VERSION_CODENAME} stable
+Homepage URL: https://atlas.example.com
+Authorization callback URL: https://atlas.example.com/auth/github/callback
 ```
 
-例如：
+`OAUTH_ALLOWLIST` 使用数字 ID，例如 `github:123456,github:789012`。除非明确接受自动建号，否则保持 `ALLOW_FIRST_LOGIN=false`。
 
-- Debian 11 → `bullseye`
-- Debian 12 → `bookworm`
-- Debian 13 → `trixie`
+## 5. SQLite 路径与权限
 
-### 2. 兼容场景
+Docker 模式必须让数据库位于持久化的 `./data/` 内：
 
-脚本已针对以下情况做了处理：
+```env
+DATABASE_PATH=./data/arcade-atlas.sqlite
+```
 
-- Debian 11 / 12 / 13
-- Ubuntu 常见 LTS 版本
-- 已安装 Docker、但未安装 Compose Plugin
-- 已安装旧版 `docker-compose`
-- `docker compose version` 已经可用
-- Docker 官方仓库不支持当前 `VERSION_CODENAME`
+Compose 映射 `./data:/app/data`。脚本会拒绝 Docker 模式下指向 `data/` 外的路径，避免容器内静默创建新空库。
 
-### 3. 失败时的处理方式
+Node 模式可使用绝对路径，但运行用户必须对数据库文件和父目录有读写权限。SQLite WAL 还会创建 `-wal`、`-shm` 文件，因此只给主文件写权限不够：
 
-如果某一步失败，脚本会立刻停止，并给出清晰提示，例如：
+```bash
+mkdir -p data
+chmod 750 data
+# 按实际运行用户设置，不要无条件使用 777
+chown -R arcade-atlas:arcade-atlas data
+```
 
-- `apt update` 失败
-- Docker 官方仓库不存在当前系统代号
-- Docker GPG Key 配置失败
-- Docker 组件安装失败
-- Docker 服务启动失败
-- `docker compose config` 失败
-- 健康检查失败
+项目没有文件上传目录。数据库及可能由运维放入 `data/` 的文件是唯一由 Compose 持久化的项目数据；机台类型中的历史 `image` 字段不是当前上传功能。
 
----
+## 6. 一键 Fresh Install
 
-## 五、Docker Compose 部署
-
-### 1. 直接运行脚本
+推荐：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
 ```
 
-如果仓库已经在本地：
+或者在仓库目录：
 
 ```bash
 bash ./scripts/bootstrap-deploy-local.sh --mode docker
 ```
 
-### 2. 脚本完成的工作
+流程：
 
-- 检查系统环境与当前用户权限
-- 检测是否为首次安装、已安装且健康，或已安装但异常
-- 输出 Git / Docker / Compose / `.env` / 数据库 / health check / 版本检测结果
-- 已安装且健康时提供：升级 / 重置部署 / 完全清理 / 退出
-- 已安装但异常时提示优先执行重置部署恢复
-- 检查或安装 Docker
-- 检查或安装 Docker Compose Plugin
-- 首次安装时选择后台认证方式
-- 自动生成 `.env`，已有 `.env` 则保留现有配置并补齐缺失键
-- 已安装环境升级前自动备份 `.env`、数据库文件和 `data/`
-- 重置部署时自动备份到 `/opt/arcade-atlas-backups/`
-- 在启动前预检查认证配置
-- 执行 `docker compose config`
-- 执行 `docker compose build`
-- 停止旧的 `arcade-atlas` 容器
-- 执行 `docker compose run --rm arcade-atlas npm run migrate`
-- 执行 `docker compose up -d`
-- 执行健康检查：`/health`
-- 输出版本、服务状态、访问地址与登录方式
+1. 识别系统、权限、安装状态、Git 和运行服务
+2. 安装缺失的 Docker/Compose 或 Node 22 工具链
+3. 创建 `.env`，收集 `APP_URL` 和首次认证配置
+4. 验证端口、数据库持久化路径和认证配置
+5. 执行 `npm ci` / Docker build
+6. 执行 `npm run build`
+7. 停止旧服务（Fresh install 无旧服务）
+8. 执行 `npm run migrate`
+9. 启动应用
+10. 要求 `/health` 同时返回 HTTP 2xx、`status: ok`、`database.initialized: true`
 
-### 3. 升级确认与安全策略
+脚本使用 `set -euo pipefail`，关键安装、构建、migration、启动或 health 失败会停止并输出诊断，不会把数据库异常标记为成功。
 
-如果脚本检测到当前环境已经安装，会继续读取：
-
-- 当前安装版本
-- 当前代码版本
-- 最新版本
-
-当检测到新版本时，会提示是否升级；如果输入 `N`，脚本会直接退出，不会修改当前环境。
-
-升级过程中会遵循以下规则：
-
-- 不覆盖现有 `.env`
-- 不清空数据库文件
-- 不删除 `data/` 目录中的用户数据
-- 先备份，再拉取代码并完成构建预检查
-- 实际服务切换顺序固定为：停止旧服务 → 执行 Migration → 启动新服务 → 健康检查
-- 如果 Migration 失败，脚本会输出明确错误，并尝试恢复之前正在运行的服务，避免停在半升级状态
-
-### 4. 重置部署
-
-当脚本检测到当前环境异常，或你主动在菜单中选择“重置部署”时，脚本会：
-
-- 自动备份 `.env`、`data/`、SQLite 数据库到 `/opt/arcade-atlas-backups/`
-- 保留 Docker / Docker Compose / Node.js / npm / 系统依赖
-- 保留 `.env`、`data/`、SQLite 数据库与业务数据
-- 仅清理 `node_modules`、`dist`、`build`、`.deploy/`、PID / 日志，以及 `arcade-atlas` 容器
-- 清理完成后继续执行：环境检查 → 代码同步 → 配置恢复 → 安装依赖 / build → migration → 启动 → health check
-
-### 5. 完全清理
-
-当你选择“完全清理 Arcade Atlas”时，脚本会：
-
-- 先输出完整的项目目录、配置文件、数据目录、数据库路径和部署状态文件路径
-- 校验目标目录中存在：
-  - `package.json`
-  - `docker-compose.yml`
-  - `scripts/bootstrap-deploy.sh`
-- 可选创建清理前备份
-- 要求手动输入 `DELETE ARCADE ATLAS` 进行二次确认
-- 仅删除 Arcade Atlas 代码、`.env`、`data/`、SQLite 数据库、部署状态文件，以及 Arcade Atlas 自身容器和镜像
-
-脚本不会执行以下危险操作：
-
-- `docker system prune`
-- 删除其他项目容器 / 镜像
-- 卸载 Docker / Docker Compose / Node.js / npm
-- 删除系统依赖
-
-### 6. 持久化数据
-
-`docker-compose.yml` 会把宿主机目录映射到容器：
-
-```text
-./data -> /app/data
-```
-
-默认情况下，`.env` 中的：
-
-```text
-DATABASE_PATH=./data/arcade-atlas.sqlite
-```
-
-会在容器内解析为：
-
-```text
-/app/data/arcade-atlas.sqlite
-```
-
-因此容器重建后数据库仍然保留，只要宿主机 `data` 目录没有删除即可。
-
-如果你从旧的 Node 部署切换到 Docker，而 `.env` 中仍是旧的绝对路径（例如 `/opt/arcade-atlas/data/arcade-atlas.sqlite`），脚本会自动规范化为 `./data/arcade-atlas.sqlite`。如果 `DATABASE_PATH` 指向 `./data/` 之外的位置，脚本会直接停止并要求先迁移数据库，避免容器静默创建新的空数据库。
-
-### 7. 健康检查
-
-项目提供：
-
-```text
-GET /health
-```
-
-`docker-compose.yml` 已使用该地址配置健康检查。
-
-接口会返回：
-
-- 当前应用版本
-- API 状态
-- 数据库初始化状态
-- Redis 是否启用（当前仓库未启用）
-- 基础前端可用状态
-
----
-
-## 六、Node.js 手动部署
-
-### 1. 安装依赖
+## 7. 手工 Docker Compose 部署
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y curl git build-essential python3
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
+cd /opt/arcade-atlas
+docker compose --env-file .env config
+docker compose --env-file .env build
+docker compose --env-file .env run --rm arcade-atlas npm run migrate
+docker compose --env-file .env up -d
+docker compose ps
+curl -fsS http://127.0.0.1:3000/health
 ```
 
-### 2. 安装项目依赖并构建
+Dockerfile 在镜像中运行 `npm ci`、`npm run build`、`npm prune --omit=dev`，启动命令是 `node dist/server.js`，与 `package.json` 一致。Compose healthcheck 使用 Node 内置 `fetch`，数据库未初始化时应用返回 503，容器不会被误判健康。
+
+## 8. 手工 Node 部署
 
 ```bash
+cd /opt/arcade-atlas
 npm ci
+npm run lint
 npm run build
-```
-
-### 3. 执行 Migration
-
-在升级现有 Node 服务时，顺序必须是：
-
-1. 先确认升级
-2. 备份现有 `.env`、数据库和 `data/`
-3. 停止旧服务
-4. 执行 `npm run migrate`
-5. 重新启动服务
-6. 执行健康检查
-
-如果用户取消确认，脚本不会停止当前运行中的 Node 服务。
-
-```bash
 npm run migrate
-```
-
-### 4. 以 nohup 方式启动服务
-
-```bash
 mkdir -p .deploy
 nohup npm run start > .deploy/app.log 2>&1 &
 echo $! > .deploy/arcade-atlas.pid
+curl -fsS http://127.0.0.1:3000/health
 ```
 
-相关运行文件：
+一键脚本的 Node 模式也只支持这个 PID 文件 + `nohup` 方案。停止进程前会校验 PID 的命令行、工作目录或监听端口，无法确认归属就拒绝 `kill`。
 
-- PID 文件：`.deploy/arcade-atlas.pid`
-- 日志文件：`.deploy/app.log`
+仓库没有 systemd unit 或 PM2 配置。本发布不把手写 systemd/PM2 服务视为已验证部署方式；正式环境优先选择 Docker Compose 的 `restart: unless-stopped`。
 
-停止旧的 Node 服务前，脚本会校验 PID 对应进程的命令行、工作目录或监听端口；如果无法确认该 PID 仍属于 Arcade Atlas，则不会执行 `kill`，而是提示用户手动处理。
+## 9. Nginx 与 HTTPS
 
----
+下面是最小 Nginx 反向代理示例：
 
-## 七、部署后检查
+```nginx
+server {
+    listen 80;
+    server_name atlas.example.com;
 
-建议确认：
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
+```
 
-1. 首页可以打开
-2. `/repairs` 可按分类看到机台并进入公开报修页
-3. `/health` 返回正常
-4. `/health` 中的 `version`、`checks.database` 与 `database.initialized` 正常
-5. 首页最近 15 条报修记录与维修记录能自动刷新
-6. 公开报修页提交成功后会显示 Toast，失败时会显示错误提示
-7. `/login` 能看到正确的登录方式
-8. 用户名密码模式下可直接登录后台
-9. GitHub OAuth 模式下能正常跳转并回调
-10. `/admin/auth-settings` 可查看当前认证配置
-11. 数据库文件正确落在 `DATABASE_PATH` 所指位置
-
----
-
-## 八、常见问题
-
-### 1. `docker compose version` 不可用
-
-请先检查：
+应用端口应只允许反向代理或受信网络访问；Compose 当前会把 `${PORT}` 发布到宿主机，需由防火墙限制公网直连。配置完成后：
 
 ```bash
-docker compose version
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-如果失败，再检查：
+HTTPS 证书由现有基础设施或 Certbot 管理。启用 HTTPS 后同步更新：
 
-```bash
-. /etc/os-release
-echo "$ID $VERSION_CODENAME"
-cat /etc/apt/sources.list.d/docker.list
-sudo apt-get update
-```
+- `.env` 的 `APP_URL=https://atlas.example.com`
+- GitHub OAuth Homepage URL
+- GitHub OAuth callback URL
+- Nginx HTTPS server block
 
-### 2. GitHub OAuth 回调失败
+然后重启应用。Cookie 是否设置 `Secure` 由 `APP_URL` 是否为 HTTPS 决定，因此该值不能错误地保留为 HTTP。
 
-请确认：
+## 10. 静态资源与模板
 
-- `APP_URL` 是否正确
-- GitHub OAuth App 的 Homepage URL 是否等于 `APP_URL`
-- GitHub OAuth App 的 callback URL 是否等于 `APP_URL/auth/github/callback`
-- 当前 GitHub 用户 ID 是否已加入 `OAUTH_ALLOWLIST`
+Express 从运行工作目录加载：
 
-### 3. 本地用户名密码无法登录
+- `public/styles.css`
+- `public/app.js`
+- `views/*.ejs`
+- `views/partials/*.ejs`
 
-请确认：
+不要只复制 `dist/` 后从另一目录启动；这会丢失模板、静态文件、`VERSION` 和 `.env`。Dockerfile已经复制这些资源。项目没有单独的前端 `dist`，也没有额外 bundler 命令。
 
-- `AUTH_MODE` 是否为 `local` 或 `both`
-- `LOCAL_ADMIN_USERNAME` 是否存在
-- `LOCAL_ADMIN_PASSWORD_HASH` 与 `LOCAL_ADMIN_PASSWORD_SALT` 是否存在
-- 部署后是否已重启服务
+## 11. 日志与健康检查
 
-### 4. 健康检查失败
-
-Docker 部署可检查：
+Docker：
 
 ```bash
 docker compose ps
-docker compose logs --tail=200
+docker compose logs --tail=200 arcade-atlas
+docker inspect --format '{{json .State.Health}}' arcade-atlas
 ```
 
-Node 部署可检查：
+Node：
 
 ```bash
-cat .deploy/app.log
+tail -n 200 .deploy/app.log
 cat .deploy/arcade-atlas.pid
 ```
+
+健康检查：
+
+```bash
+curl -i http://127.0.0.1:3000/health
+```
+
+成功必须同时满足 HTTP 200、`status: "ok"`、`checks.database: "ok"`、`database.initialized: true`。数据库不完整时返回 HTTP 503。健康响应当前明确显示 Redis 为 `not-configured`，项目不依赖 Redis。
+
+## 12. 备份
+
+一键升级备份位于：
+
+```text
+<项目目录>/.deploy/backups/upgrade-YYYYMMDD-HHMMSS/
+```
+
+重置/清理前备份默认位于：
+
+```text
+/opt/arcade-atlas-backups/<操作>-YYYYMMDD-HHMMSS/
+```
+
+备份包含 `.env.backup`、`data/`，并使用 Python SQLite Backup API 覆盖数据库副本后执行 `PRAGMA integrity_check`。`database-source-path.txt` 记录源路径；即使应用使用 WAL，也不会依赖不一致的普通热复制。
+
+人工备份建议在停服后执行，或使用 SQLite 在线 backup API。必须同时保护 `.env`，否则本地管理员和 OAuth 配置无法完整恢复。将备份复制到项目目录之外并定期验证：
+
+```bash
+python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect('/path/to/backup.sqlite')
+print(db.execute('PRAGMA integrity_check').fetchone()[0])
+db.close()
+PY
+```
+
+## 13. 安全更新
+
+重新运行一键脚本即可。已安装环境会显示状态，并提供升级、重置、完全清理或退出：
+
+```bash
+cd /opt/arcade-atlas
+bash ./scripts/bootstrap-deploy-local.sh --mode docker
+```
+
+升级保障：
+
+- 以部署状态文件识别已成功部署版本，以 `VERSION` / Git ref 检测代码版本
+- 新版本提示确认；取消时不停止当前服务
+- 不覆盖 `.env`，不删除 `data/`
+- Git 工作树脏时拒绝自动拉取
+- 先做一致性备份，再更新代码与构建
+- 服务切换顺序：停旧服务 → migration → 启新服务 → strict health
+- migration 可重复运行；`schema_migrations` 防止重复转换
+
+Node 模式执行 `npm ci`，因为仓库包含锁文件且正式部署要求可重现依赖；不要用 `npm install` 替代升级流程。Docker build 同样使用 `npm ci`。
+
+## 14. 回滚
+
+脚本不会自动回滚 Git commit 或已构建镜像。migration 失败时会尝试重新启动升级前仍存在的服务实例，但这不是完整代码回滚；如果前面的 migration 已经成功提交了一部分步骤，应先人工判断旧代码是否兼容。
+
+完整回滚流程：
+
+1. 停止当前应用，确认没有进程写数据库
+2. 保存失败现场的 `.env`、数据库和日志
+3. 从升级前 snapshot 恢复数据库与所需 `data/` 文件
+4. 恢复 `.env.backup`（只在确认需要时，避免覆盖事后合法配置）
+5. 将代码切回明确记录的上一 commit / release
+6. 重新 `npm ci && npm run build` 或重新构建 Docker 镜像
+7. 不要让旧代码执行只适用于新版本的 migration
+8. 启动并检查 `/health`、登录、机台、报修和维修记录
+
+在没有可恢复备份和明确上一 commit 的情况下，不要执行破坏性数据库回退。
+
+## 15. 数据库升级兼容性
+
+当前 migration 顺序：
+
+1. 重建早期 OAuth-only `users` 表以支持本地认证
+2. 创建当前基础表和 migration 记录表
+3. 补齐用户认证列与 RBAC；只有无管理员时才提升最早用户
+4. 补齐机台类型 `version`
+5. 增加机台软删除并移除旧 `location`
+6. 扩展报修历史状态并增加软删除
+7. 合并旧维修 `result` / `content`，增加软删除
+8. 在相关列存在后创建软删除索引
+
+所有结构转换保留主键和外键关系。正式升级前仍必须在数据库副本上运行：
+
+```bash
+npm run build
+DATABASE_PATH=/path/to/copy.sqlite npm run migrate
+```
+
+再检查：
+
+```bash
+python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect('/path/to/copy.sqlite')
+print('integrity:', db.execute('PRAGMA integrity_check').fetchone()[0])
+print('foreign keys:', db.execute('PRAGMA foreign_key_check').fetchall())
+print('migrations:', db.execute('SELECT name, applied_at FROM schema_migrations ORDER BY applied_at').fetchall())
+db.close()
+PY
+```
+
+## 16. 部署后功能检查
+
+至少人工确认：
+
+1. `/health` 为 200 且数据库正常
+2. `/` 的真实统计、最近 15 条报修/维修正常
+3. `/repairs` 能选择机台
+4. 扫码后的 `/machine/:token` 能提交报修
+5. `/login` 显示预期认证方式
+6. 本地登录或 GitHub OAuth 能进入后台
+7. `repair` 只能访问报修/维修；`admin` 可访问认证、机台类型和机台管理
+8. 机台详情二维码能下载，重置后旧 token 失效
+9. 报修可以流转并新增维修记录
+10. 404 页面和未知 API 返回正确格式
+11. 公共页面 light/dark、移动布局和浏览器 console 正常
+
+## 17. 常见错误
+
+### `npm ci` 报 `EBADENGINE`
+
+使用 `node -v` 检查，切换到 Node 22.x。不要通过 `--force` 隐藏版本错误。
+
+### `better-sqlite3` / `node-gyp` 失败
+
+```bash
+sudo apt-get install -y build-essential python3
+node -v
+npm ci
+```
+
+确认 CPU / libc 平台受支持。没有预编译文件时会从源码构建；关键编译失败不可使用 `--ignore-scripts` 绕过。
+
+### SQLite `readonly database` / `unable to open database file`
+
+检查 `DATABASE_PATH`、父目录存在性与运行用户权限。WAL 需要目录可写。Docker 检查 `./data:/app/data` 挂载。
+
+### health 返回 503
+
+检查日志并重新运行 `npm run migrate`。不要让反向代理把 503 改写为 200。
+
+### GitHub OAuth callback/state 错误
+
+核对 HTTPS `APP_URL`、callback URL、Client Secret、浏览器 Cookie 和系统时间。白名单必须使用数字 ID。
+
+### 所有用户一起被限流
+
+应用对 `/auth`、`/admin`、`/api/admin` 有速率限制。确认反向代理传递真实客户端地址，限制应用端口只允许受信代理访问，并在正式上线前结合代理拓扑验证限流行为。
+
+### 更新被“dirty worktree”阻止
+
+先审查 `git status --short`。提交、备份或移走明确属于运维的改动后，再运行升级；不要强制覆盖未知文件。
+
+### 容器健康但页面不可访问
+
+检查端口映射、防火墙、Nginx upstream 和 `APP_URL`。容器内部 health 只证明应用与数据库可用，不证明外部 DNS / TLS 已正确配置。

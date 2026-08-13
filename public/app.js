@@ -1,5 +1,113 @@
 (function () {
   const POLL_INTERVAL_MS = 30000;
+  const THEME_STORAGE_KEY = 'arcade-atlas-theme';
+  const root = document.documentElement;
+  const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  function getSavedTheme() {
+    try {
+      const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+      return savedTheme === 'dark' || savedTheme === 'light' ? savedTheme : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function setTheme(theme) {
+    root.dataset.theme = theme;
+    root.style.colorScheme = theme;
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    const toggle = document.querySelector('[data-theme-toggle]');
+    if (themeColor) {
+      themeColor.setAttribute('content', theme === 'dark' ? '#171815' : '#efebe2');
+    }
+    if (toggle) {
+      toggle.setAttribute('aria-label', theme === 'dark' ? '切换到浅色主题' : '切换到深色主题');
+      toggle.setAttribute('title', theme === 'dark' ? '切换到浅色主题' : '切换到深色主题');
+    }
+  }
+
+  function setupTheme() {
+    const toggle = document.querySelector('[data-theme-toggle]');
+    setTheme(getSavedTheme() || (systemTheme.matches ? 'dark' : 'light'));
+
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        const nextTheme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        setTheme(nextTheme);
+        try {
+          window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+        } catch (_error) {
+          // The selected theme still applies for the current page when storage is unavailable.
+        }
+      });
+    }
+
+    systemTheme.addEventListener('change', (event) => {
+      if (!getSavedTheme()) {
+        setTheme(event.matches ? 'dark' : 'light');
+      }
+    });
+  }
+
+  function setupRevealAnimations() {
+    const elements = Array.from(document.querySelectorAll('[data-reveal]'));
+    if (!elements.length || reducedMotion.matches || !('IntersectionObserver' in window)) {
+      elements.forEach((element) => element.classList.add('is-visible'));
+      return;
+    }
+
+    root.classList.add('motion-ready');
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry, index) => {
+          if (!entry.isIntersecting) {
+            return;
+          }
+          entry.target.style.transitionDelay = `${Math.min(index * 55, 220)}ms`;
+          entry.target.classList.add('is-visible');
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.1, rootMargin: '0px 0px -4% 0px' },
+    );
+
+    elements.forEach((element) => observer.observe(element));
+  }
+
+  function setupHeroParallax() {
+    const shell = document.querySelector('[data-hero-parallax]');
+    const finePointer = window.matchMedia('(pointer: fine)');
+    if (!shell || !finePointer.matches || reducedMotion.matches) {
+      return;
+    }
+
+    let frame = 0;
+    let nextTransform = '';
+    const render = () => {
+      shell.style.transform = nextTransform;
+      frame = 0;
+    };
+
+    shell.addEventListener('pointermove', (event) => {
+      const bounds = shell.getBoundingClientRect();
+      const x = (event.clientX - bounds.left) / bounds.width - 0.5;
+      const y = (event.clientY - bounds.top) / bounds.height - 0.5;
+      nextTransform = `perspective(1200px) rotateX(${y * -1.1}deg) rotateY(${x * 1.35}deg)`;
+      if (!frame) {
+        frame = window.requestAnimationFrame(render);
+      }
+    });
+
+    shell.addEventListener('pointerleave', () => {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      shell.style.transform = 'perspective(1200px) rotateX(0) rotateY(0)';
+    });
+  }
 
   function escapeHtml(value) {
     return String(value)
@@ -61,9 +169,21 @@
     });
 
     window.addEventListener('resize', () => {
-      if (window.innerWidth > 720) {
+      if (window.innerWidth > 1120) {
         closeNav();
       }
+    });
+  }
+
+  function setupHistoryBack() {
+    document.querySelectorAll('[data-history-back]').forEach((control) => {
+      control.addEventListener('click', () => {
+        if (window.history.length > 1) {
+          window.history.back();
+          return;
+        }
+        window.location.assign('/');
+      });
     });
   }
 
@@ -225,6 +345,14 @@
       const data = await fetchJson(url);
       repairsList.innerHTML = renderRepairs(data.recentRepairs || []);
       maintenanceList.innerHTML = renderMaintenanceLogs(data.recentMaintenanceLogs || []);
+      if (data.stats) {
+        Object.entries(data.stats).forEach(([name, value]) => {
+          const target = document.querySelector(`[data-overview-stat="${name}"]`);
+          if (target && (typeof value === 'string' || typeof value === 'number')) {
+            target.textContent = String(value);
+          }
+        });
+      }
     };
 
     window.setInterval(() => {
@@ -395,9 +523,13 @@
     });
   }
 
+  setupTheme();
+  setupRevealAnimations();
+  setupHeroParallax();
   setupFlashToast();
   setupMobileNav();
   setupHomeOverviewPolling();
   setupRepairForm();
+  setupHistoryBack();
   setupStandardForms();
 })();

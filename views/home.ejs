@@ -1,58 +1,97 @@
 <%- include('partials/header', { title: '首页' }) %>
-<section class="hero panel stack">
-  <span class="eyebrow">Arcade Atlas</span>
-  <h1>机台报修与维修管理系统</h1>
-  <p class="hero-copy">可快速提交报修、查看维修记录及管理机台，适合门店与机厅统一维护设备状态。</p>
-  <div class="actions">
-    <a class="button" href="/repairs">申请报修</a>
+
+<section class="home-hero" data-reveal>
+  <div class="hero-shell" data-hero-parallax>
+    <aside class="hero-rail" aria-hidden="true"><span></span><i></i><i></i></aside>
+    <div class="hero-center">
+      <div class="hero-copy">
+        <span class="eyebrow">Arcade Operations Archive</span>
+        <h1>Arcade Atlas <span>机台报修与维修管理系统</span></h1>
+        <p class="hero-lead">快速提交报修、查看真实维修记录，并让每一台设备的维护过程都有迹可循。</p>
+        <div class="hero-actions">
+          <a class="button" href="/repairs">申请报修 <span aria-hidden="true">→</span></a>
+          <a class="button secondary" href="#recent-records">查看近期记录 <span aria-hidden="true">↓</span></a>
+        </div>
+      </div>
+      <span class="hero-pulse" aria-hidden="true"></span>
+    </div>
+    <aside class="hero-rail hero-rail-right" aria-hidden="true"><span></span><i></i><i></i></aside>
+
+    <div class="hero-flow" aria-label="系统实时统计">
+      <div><span>01</span><strong data-overview-stat="machineTotal"><%= stats.machineTotal %></strong><small>机台总数</small></div>
+      <div><span>02</span><strong data-overview-stat="pendingRepairTotal"><%= stats.pendingRepairTotal %></strong><small>待处理报修</small></div>
+      <div><span>03</span><strong data-overview-stat="currentMonthMaintenanceTotal"><%= stats.currentMonthMaintenanceTotal %></strong><small>本月维修</small></div>
+      <div>
+        <span>04</span>
+        <strong data-overview-stat="maintenanceMonthChangeText"><%= stats.maintenanceMonthChangeText %></strong>
+        <small>上月 <b data-overview-stat="previousMonthMaintenanceTotal"><%= stats.previousMonthMaintenanceTotal %></b> 条维修</small>
+      </div>
+    </div>
   </div>
 </section>
 
-<section class="grid two-columns top-gap" data-home-overview-url="/api/public/overview">
-  <article class="panel stack">
-    <div class="section-heading">
-      <h2>最近 15 条报修记录</h2>
-      <span class="muted">自动刷新</span>
+<section id="recent-records" class="records-section" data-home-overview-url="/api/public/overview">
+  <div class="section-heading section-heading-large" data-reveal>
+    <div>
+      <span class="eyebrow">Live records</span>
+      <h2>近期记录</h2>
     </div>
-    <div class="stack" data-home-repairs-list>
-      <% if (recentRepairs.length === 0) { %>
-        <p class="empty-state">暂无报修记录。</p>
-      <% } else { %>
-        <% recentRepairs.forEach((repair) => { %>
-          <article class="card record-card stack compact">
-            <div class="record-meta">
-              <strong><%= repair.machine_name %></strong>
-              <span><%= formatDateTime(repair.created_at) %></span>
-            </div>
-            <span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span>
-            <p><%= repair.content %></p>
-          </article>
-        <% }) %>
-      <% } %>
-    </div>
-  </article>
+    <span class="live-note"><i aria-hidden="true"></i> 每 30 秒自动刷新</span>
+  </div>
 
-  <article class="panel stack">
-    <div class="section-heading">
-      <h2>最近 15 条维修记录</h2>
-      <span class="muted">自动刷新</span>
-    </div>
-    <div class="stack" data-home-maintenance-list>
-      <% if (recentMaintenanceLogs.length === 0) { %>
-        <p class="empty-state">暂无维修记录。</p>
-      <% } else { %>
-        <% recentMaintenanceLogs.forEach((log) => { %>
-          <article class="card record-card stack compact">
-            <div class="record-meta">
-              <strong><%= log.machine_name %></strong>
-              <span><%= formatDateTime(log.created_at) %></span>
-            </div>
-            <span class="muted"><%= log.operator_name %></span>
-            <p><%= log.content %></p>
-          </article>
-        <% }) %>
-      <% } %>
-    </div>
-  </article>
+  <div class="records-grid">
+    <article class="record-panel" data-reveal>
+      <header class="record-panel-head">
+        <div>
+          <span class="record-kicker">Repair requests</span>
+          <h3>最近 15 条报修记录</h3>
+        </div>
+        <span class="record-count"><%= recentRepairs.length %></span>
+      </header>
+      <div class="record-feed" data-home-repairs-list aria-live="polite">
+        <% if (recentRepairs.length === 0) { %>
+          <p class="empty-state">暂无报修记录。</p>
+        <% } else { %>
+          <% recentRepairs.forEach((repair) => { %>
+            <article class="card record-card stack compact">
+              <div class="record-meta">
+                <strong><%= repair.machine_name %></strong>
+                <span><%= formatDateTime(repair.created_at) %></span>
+              </div>
+              <span class="<%= ui.repairStatusClass(repair.status) %>"><%= ui.repairStatusLabels[repair.status] %></span>
+              <p><%= repair.content %></p>
+            </article>
+          <% }) %>
+        <% } %>
+      </div>
+    </article>
+
+    <article class="record-panel" data-reveal>
+      <header class="record-panel-head">
+        <div>
+          <span class="record-kicker">Maintenance logs</span>
+          <h3>最近 15 条维修记录</h3>
+        </div>
+        <span class="record-count"><%= recentMaintenanceLogs.length %></span>
+      </header>
+      <div class="record-feed" data-home-maintenance-list aria-live="polite">
+        <% if (recentMaintenanceLogs.length === 0) { %>
+          <p class="empty-state">暂无维修记录。</p>
+        <% } else { %>
+          <% recentMaintenanceLogs.forEach((log) => { %>
+            <article class="card record-card stack compact">
+              <div class="record-meta">
+                <strong><%= log.machine_name %></strong>
+                <span><%= formatDateTime(log.created_at) %></span>
+              </div>
+              <span class="muted"><%= log.operator_name %></span>
+              <p><%= log.content %></p>
+            </article>
+          <% }) %>
+        <% } %>
+      </div>
+    </article>
+  </div>
 </section>
+
 <%- include('partials/footer') %>
