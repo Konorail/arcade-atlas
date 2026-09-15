@@ -128,7 +128,7 @@ bash ./scripts/bootstrap-deploy-local.sh --mode node
 
 脚本只支持 Debian / Ubuntu，并使用 `set -euo pipefail`。它会检测安装状态、Git 状态、运行模式、health、部署状态文件和版本；保留现有 `.env`，只补充缺失键；升级前用 SQLite Backup API 创建一致性数据库快照并备份 `data/`；随后执行 build、停旧服务、migration、启动和严格 health 检查。
 
-脚本以根目录 `VERSION` 识别代码版本，以 `.deploy/deployment-state.env` 记录已成功部署版本。存在未提交代码时拒绝自动 `git pull`。关键失败不会静默继续。
+脚本以根目录 `VERSION` 识别代码版本，以 `.deploy/deployment-state.env` 记录已成功部署版本以及访问模式元数据（如 `ACCESS_MODE`、`PROXY`、`TLS_MANAGED`）。其中 `TLS_MANAGED` 表示 TLS 生命周期是否由 Arcade Atlas 部署器负责，并不等同于“站点当前是否使用 HTTPS”。当前脚本仍只负责应用自身部署，不会自动接管 Nginx、Caddy、1Panel 或证书签发。
 
 升级命令、备份位置、重置/清理边界和回滚限制见 [DEPLOYMENT.md](./DEPLOYMENT.md)。仓库没有 systemd unit 或 PM2 配置；正式环境优先使用 Docker Compose，Node 模式仅使用脚本实现的 PID 文件与 `nohup`。
 

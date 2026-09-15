@@ -45,6 +45,11 @@ STATE_FILE_DEPLOY_MODE=""
 STATE_FILE_DEPLOY_STATUS=""
 STATE_FILE_DEPLOY_VERSION=""
 STATE_FILE_TARGET_DIR=""
+STATE_FILE_ACCESS_MODE=""
+STATE_FILE_DOMAIN=""
+STATE_FILE_PROXY=""
+STATE_FILE_TLS_MANAGED=""
+STATE_FILE_ACME_PROVIDER=""
 declare -a DEPLOYMENT_ISSUES=()
 
 log() {
@@ -414,6 +419,15 @@ show_detection_summary() {
   log "最新版本：$LATEST_VERSION"
   log "部署配置：$DEPLOYMENT_CONFIG_STATUS"
   log "部署状态文件：$DEPLOYMENT_STATE_FILE_STATUS"
+  if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+    log "状态文件部署状态：$STATE_FILE_DEPLOY_STATUS"
+    log "状态文件访问模式：${STATE_FILE_ACCESS_MODE:-未记录}"
+    log "状态文件代理：${STATE_FILE_PROXY:-未记录}"
+    log "状态文件 TLS 管理：${STATE_FILE_TLS_MANAGED:-未记录}"
+    if [[ -n "$STATE_FILE_DOMAIN" ]]; then
+      log "状态文件域名：$STATE_FILE_DOMAIN"
+    fi
+  fi
   log "运行模式：$RUNTIME_DEPLOY_MODE"
   log "运行状态：$RUNTIME_SERVICE_STATUS"
   log "运行详情：$RUNTIME_STATUS_DETAILS"
@@ -677,6 +691,46 @@ read_env_value() {
 validate_http_url() {
   local value="$1"
   [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || fail_step "APP_URL 必须是合法的 http:// 或 https:// 地址。"
+}
+
+infer_deployment_access_metadata() {
+  local app_url="$1"
+  python3 - "$app_url" <<'PYTHON_INFER_DEPLOYMENT_ACCESS_METADATA'
+import ipaddress
+import sys
+from urllib.parse import urlparse
+
+app_url = sys.argv[1].strip()
+parsed = urlparse(app_url)
+scheme = (parsed.scheme or "http").lower()
+host = (parsed.hostname or "").strip()
+
+def is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+access_mode = "direct_http"
+proxy = "none"
+tls_managed = "false"
+acme_provider = "none"
+domain = ""
+
+if host and not is_ip(host) and host.lower() != "localhost":
+    domain = host
+
+if scheme == "https":
+    access_mode = "external_proxy"
+    proxy = "external"
+
+print(f"ACCESS_MODE={access_mode}")
+print(f"DOMAIN={domain}")
+print(f"PROXY={proxy}")
+print(f"TLS_MANAGED={tls_managed}")
+print(f"ACME_PROVIDER={acme_provider}")
+PYTHON_INFER_DEPLOYMENT_ACCESS_METADATA
 }
 
 validate_port_value() {
@@ -1747,29 +1801,62 @@ deployment_state_file_path() {
 }
 
 write_deployment_state_file() {
-  local state_file temp_file deployed_version
+  local deploy_status="${1:-healthy}"
+  local state_file temp_file deployed_version env_file app_url metadata_line access_mode domain proxy tls_managed acme_provider
+  case "$deploy_status" in
+    healthy|partial) ;;
+    *)
+      fail_step "不支持的部署状态：$deploy_status"
+      ;;
+  esac
   state_file="$(deployment_state_file_path)"
   ensure_directory_available "$(dirname "$state_file")"
   deployed_version="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
+  env_file="$TARGET_DIR/.env"
+  app_url="$(read_env_value "$env_file" "APP_URL" 2>/dev/null || true)"
+  if [[ -z "$app_url" ]]; then
+    app_url="http://127.0.0.1:3000"
+  else
+    validate_http_url "$app_url"
+  fi
+  while IFS= read -r metadata_line; do
+    case "$metadata_line" in
+      ACCESS_MODE=*) access_mode="${metadata_line#ACCESS_MODE=}" ;;
+      DOMAIN=*) domain="${metadata_line#DOMAIN=}" ;;
+      PROXY=*) proxy="${metadata_line#PROXY=}" ;;
+      TLS_MANAGED=*) tls_managed="${metadata_line#TLS_MANAGED=}" ;;
+      ACME_PROVIDER=*) acme_provider="${metadata_line#ACME_PROVIDER=}" ;;
+    esac
+  done < <(infer_deployment_access_metadata "$app_url")
   temp_file="$(mktemp)"
   cat >"$temp_file" <<EOF
 DEPLOY_MODE=$MODE
-DEPLOY_STATUS=healthy
+DEPLOY_STATUS=$deploy_status
 DEPLOY_VERSION=$deployed_version
 TARGET_DIR=$TARGET_DIR
+ACCESS_MODE=${access_mode:-direct_http}
+DOMAIN=${domain:-}
+PROXY=${proxy:-none}
+TLS_MANAGED=${tls_managed:-false}
+ACME_PROVIDER=${acme_provider:-none}
 UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   mv "$temp_file" "$state_file"
 }
 
 detect_deployment_state_file_status() {
-  local state_file mode_value status_value version_value target_dir_value
+  local state_file mode_value status_value version_value target_dir_value access_mode_value domain_value proxy_value tls_managed_value acme_provider_value
   state_file="$(deployment_state_file_path)"
   DEPLOYMENT_STATE_FILE_STATUS="missing"
   STATE_FILE_DEPLOY_MODE=""
   STATE_FILE_DEPLOY_STATUS=""
   STATE_FILE_DEPLOY_VERSION=""
   STATE_FILE_TARGET_DIR=""
+  STATE_FILE_ACCESS_MODE=""
+  STATE_FILE_DOMAIN=""
+  STATE_FILE_PROXY=""
+  STATE_FILE_TLS_MANAGED=""
+  STATE_FILE_ACME_PROVIDER=""
 
   [[ -f "$state_file" ]] || return 0
 
@@ -1777,11 +1864,21 @@ detect_deployment_state_file_status() {
   status_value="$(read_env_value "$state_file" "DEPLOY_STATUS" 2>/dev/null || true)"
   version_value="$(read_env_value "$state_file" "DEPLOY_VERSION" 2>/dev/null || true)"
   target_dir_value="$(read_env_value "$state_file" "TARGET_DIR" 2>/dev/null || true)"
+  access_mode_value="$(read_env_value "$state_file" "ACCESS_MODE" 2>/dev/null || true)"
+  domain_value="$(read_env_value "$state_file" "DOMAIN" 2>/dev/null || true)"
+  proxy_value="$(read_env_value "$state_file" "PROXY" 2>/dev/null || true)"
+  tls_managed_value="$(read_env_value "$state_file" "TLS_MANAGED" 2>/dev/null || true)"
+  acme_provider_value="$(read_env_value "$state_file" "ACME_PROVIDER" 2>/dev/null || true)"
 
   STATE_FILE_DEPLOY_MODE="$mode_value"
   STATE_FILE_DEPLOY_STATUS="$status_value"
   STATE_FILE_DEPLOY_VERSION="$version_value"
   STATE_FILE_TARGET_DIR="$target_dir_value"
+  STATE_FILE_ACCESS_MODE="$access_mode_value"
+  STATE_FILE_DOMAIN="$domain_value"
+  STATE_FILE_PROXY="$proxy_value"
+  STATE_FILE_TLS_MANAGED="$tls_managed_value"
+  STATE_FILE_ACME_PROVIDER="$acme_provider_value"
 
   case "$mode_value" in
     docker|node) ;;
@@ -1791,10 +1888,13 @@ detect_deployment_state_file_status() {
       ;;
   esac
 
-  [[ "$status_value" == "healthy" ]] || {
-    DEPLOYMENT_STATE_FILE_STATUS="invalid"
-    return
-  }
+  case "$status_value" in
+    healthy|partial) ;;
+    *)
+      DEPLOYMENT_STATE_FILE_STATUS="invalid"
+      return
+      ;;
+  esac
 
   [[ -n "$version_value" && -n "$target_dir_value" ]] || {
     DEPLOYMENT_STATE_FILE_STATUS="invalid"
@@ -1805,6 +1905,46 @@ detect_deployment_state_file_status() {
     DEPLOYMENT_STATE_FILE_STATUS="invalid"
     return
   }
+
+  if [[ -n "$access_mode_value" ]]; then
+    case "$access_mode_value" in
+      managed_https|external_proxy|direct_http) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ -n "$proxy_value" ]]; then
+    case "$proxy_value" in
+      nginx|external|none) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ -n "$tls_managed_value" ]]; then
+    case "$tls_managed_value" in
+      true|false) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ -n "$acme_provider_value" ]]; then
+    case "$acme_provider_value" in
+      letsencrypt|none) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
 
   DEPLOYMENT_STATE_FILE_STATUS="present"
 }
@@ -2215,6 +2355,7 @@ show_final_summary() {
   auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
   login_url="${app_url%/}/login"
   deployed_version="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
+  detect_deployment_state_file_status
 
   step 'Arcade Atlas 部署完成'
   log "版本：$deployed_version"
@@ -2226,6 +2367,14 @@ show_final_summary() {
   log "Migration：$MIGRATION_STATUS"
   log "访问地址：$app_url"
   log "后台登录地址：$login_url"
+  if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+    log "访问模式：${STATE_FILE_ACCESS_MODE:-未记录}"
+    log "代理：${STATE_FILE_PROXY:-未记录}"
+    log "TLS 生命周期管理：${STATE_FILE_TLS_MANAGED:-未记录}"
+    if [[ -n "$STATE_FILE_DOMAIN" ]]; then
+      log "域名：$STATE_FILE_DOMAIN"
+    fi
+  fi
 
   case "$auth_mode" in
     local)

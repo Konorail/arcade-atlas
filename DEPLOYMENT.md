@@ -139,6 +139,27 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 
 脚本使用 `set -euo pipefail`，关键安装、构建、migration、启动或 health 失败会停止并输出诊断，不会把数据库异常标记为成功。
 
+### 部署状态文件
+
+部署脚本使用 `<项目目录>/.deploy/deployment-state.env` 记录部署器已知的安装状态。当前至少会写入：
+
+- `DEPLOY_MODE=docker | node`
+- `DEPLOY_STATUS=healthy | partial`
+- `ACCESS_MODE=managed_https | external_proxy | direct_http`
+- `DOMAIN=<域名或空>`
+- `PROXY=nginx | external | none`
+- `TLS_MANAGED=true | false`
+- `ACME_PROVIDER=letsencrypt | none`
+
+字段语义必须固定：
+
+- `ACCESS_MODE` 表示访问拓扑，而不是“是否 HTTPS”
+- `TLS_MANAGED` 只表示 TLS 生命周期是否由 Arcade Atlas 部署器负责
+- `PROXY` 表示入口代理由谁管理
+- `ACME_PROVIDER` 只表示部署器实际使用的签发来源
+
+例如 `ACCESS_MODE=external_proxy` 且 `TLS_MANAGED=false` 时，站点仍然完全可能已经通过 1Panel、Nginx Proxy Manager、Caddy 或其他入口以 HTTPS 对外服务。
+
 ## 7. 手工 Docker Compose 部署
 
 ```bash
@@ -199,7 +220,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-HTTPS 证书由现有基础设施或 Certbot 管理。启用 HTTPS 后同步更新：
+当前仓库的正式发布流程仍以“应用跑在本机端口，HTTPS 由外部代理或运维工具终止”为基线。脚本目前不会自动接管 Nginx、Caddy、1Panel 或证书签发。启用 HTTPS 后同步更新：
 
 - `.env` 的 `APP_URL=https://atlas.example.com`
 - GitHub OAuth Homepage URL
@@ -207,6 +228,22 @@ HTTPS 证书由现有基础设施或 Certbot 管理。启用 HTTPS 后同步更�
 - Nginx HTTPS server block
 
 然后重启应用。Cookie 是否设置 `Secure` 由 `APP_URL` 是否为 HTTPS 决定，因此该值不能错误地保留为 HTTP。
+
+### 自动 HTTPS 设计约束（规划中的受管模式）
+
+如果后续增加 `ACCESS_MODE=managed_https`，第一版约束应保持严格：
+
+- 只支持域名 **直连当前主机** 的 `HTTP-01 + webroot`
+- 不支持 CDN、Proxy DNS、Tunnel 或需要猜测代理拓扑的场景
+- 必须同时检查 `A` / `AAAA`，存在错误 IPv6 结果时不能继续自动签发
+- 最终准入条件应是 challenge **从公网真实回流到本机**，而不是只比较 DNS 文本和出口 IP
+
+`APP_URL` 只能在外部入口真正成立后再切换：
+
+- Fresh install：若应用和 HTTP 反代已正常，但 ACME 失败，可保留 `APP_URL=http://<domain>` 并把部署状态标记为 `partial`
+- Upgrade：先保存旧 `APP_URL`；若 HTTPS 切换失败，必须恢复旧值，不能把首次安装 fallback 和升级回滚混为一体
+
+Express 在受管 HTTPS 或已有反代场景下只能信任 **受控、预期的反向代理链路**。不要为了图省事无条件设置 `trust proxy = true`，否则应用端口意外暴露时可能错误接受伪造的 `X-Forwarded-*` 头。
 
 ## 10. 静态资源与模板
 
@@ -289,6 +326,7 @@ bash ./scripts/bootstrap-deploy-local.sh --mode docker
 - 先做一致性备份，再更新代码与构建
 - 服务切换顺序：停旧服务 → migration → 启新服务 → strict health
 - migration 可重复运行；`schema_migrations` 防止重复转换
+- 访问模式和 TLS 生命周期职责应由部署状态文件明确区分，避免把“实际使用 HTTPS”与“由脚本负责证书续期”混为一谈
 
 Node 模式执行 `npm ci`，因为仓库包含锁文件且正式部署要求可重现依赖；不要用 `npm install` 替代升级流程。Docker build 同样使用 `npm ci`。
 
