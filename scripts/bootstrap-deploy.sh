@@ -5,9 +5,16 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/Konorail/arcade-atlas.git}"
 TARGET_DIR="${TARGET_DIR:-/opt/arcade-atlas}"
 MODE="${MODE:-docker}"
+MODE_EXPLICIT=0
 NON_INTERACTIVE=0
 ASSUME_YES=0
 SKIP_GIT_UPDATE=0
+ACCESS_MODE="${ACCESS_MODE:-}"
+ACCESS_MODE_EXPLICIT=0
+DOMAIN_ARG=""
+DOMAIN_EXPLICIT=0
+ACME_EMAIL_ARG=""
+ACME_EMAIL_EXPLICIT=0
 SUDO=""
 DOCKER_BIN=(docker)
 OS_ID=""
@@ -45,11 +52,38 @@ STATE_FILE_DEPLOY_MODE=""
 STATE_FILE_DEPLOY_STATUS=""
 STATE_FILE_DEPLOY_VERSION=""
 STATE_FILE_TARGET_DIR=""
+STATE_FILE_APP_URL=""
 STATE_FILE_ACCESS_MODE=""
 STATE_FILE_DOMAIN=""
 STATE_FILE_PROXY=""
+STATE_FILE_PROXY_MANAGED=""
+STATE_FILE_TLS_ENABLED=""
 STATE_FILE_TLS_MANAGED=""
 STATE_FILE_ACME_PROVIDER=""
+CURRENT_APP_URL=""
+DESIRED_APP_URL=""
+ACCESS_DOMAIN=""
+PROXY_KIND="none"
+PROXY_MANAGED="false"
+TLS_ENABLED="false"
+TLS_MANAGED="false"
+ACME_PROVIDER_VALUE="none"
+TRUST_PROXY_CIDRS_VALUE=""
+APP_BIND_HOST_VALUE="0.0.0.0"
+HOST_PORT_BIND_IP_VALUE="0.0.0.0"
+ACME_EMAIL_VALUE=""
+MANAGED_NGINX_SITE_NAME="arcade-atlas.conf"
+MANAGED_NGINX_SITE_AVAILABLE_PATH="/etc/nginx/sites-available/arcade-atlas.conf"
+MANAGED_NGINX_SITE_ENABLED_PATH="/etc/nginx/sites-enabled/arcade-atlas.conf"
+MANAGED_NGINX_SITE_MARKER="# Managed by Arcade Atlas"
+MANAGED_ACME_WEBROOT="/var/lib/arcade-atlas/acme"
+MANAGED_ACME_HOME="/var/lib/arcade-atlas/acme.sh"
+MANAGED_TLS_DIR="/etc/arcade-atlas/tls"
+MANAGED_TLS_FULLCHAIN_PATH="/etc/arcade-atlas/tls/fullchain.pem"
+MANAGED_TLS_PRIVKEY_PATH="/etc/arcade-atlas/tls/privkey.pem"
+MANAGED_NGINX_LOG_DIR="/var/log/arcade-atlas"
+MANAGED_HTTPS_PRECHECK_STATUS="not-run"
+FINAL_SUMMARY_HEADER="Arcade Atlas 部署完成"
 declare -a DEPLOYMENT_ISSUES=()
 
 log() {
@@ -93,6 +127,10 @@ usage() {
 
 选项：
   --mode <docker|node>       部署模式，默认 docker
+  --access-mode <managed_https|external_proxy|direct_http>
+                             访问模式；省略时 fresh install 交互选择，升级时沿用已有状态或兼容推导
+  --domain <name>            managed HTTPS 使用的单域名
+  --acme-email <email>       managed HTTPS 使用的 Let's Encrypt 邮箱
   --target-dir <path>        项目目录，默认 /opt/arcade-atlas
   --repo-url <url>           仓库地址，默认官方 GitHub 仓库
   --non-interactive          非交互模式，缺少必须配置时直接失败
@@ -103,6 +141,7 @@ usage() {
 示例：
   bash <(curl -fsSL https://raw.githubusercontent.com/Konorail/arcade-atlas/main/scripts/bootstrap-deploy.sh)
   bash scripts/bootstrap-deploy.sh --mode docker --target-dir /opt/arcade-atlas
+  bash scripts/bootstrap-deploy.sh --mode docker --access-mode managed_https --domain atlas.example.com --acme-email admin@example.com
 USAGE
 }
 
@@ -421,8 +460,13 @@ show_detection_summary() {
   log "部署状态文件：$DEPLOYMENT_STATE_FILE_STATUS"
   if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
     log "状态文件部署状态：$STATE_FILE_DEPLOY_STATUS"
+    if [[ -n "$STATE_FILE_APP_URL" ]]; then
+      log "状态文件 APP_URL：$STATE_FILE_APP_URL"
+    fi
     log "状态文件访问模式：${STATE_FILE_ACCESS_MODE:-未记录}"
     log "状态文件代理：${STATE_FILE_PROXY:-未记录}"
+    log "状态文件代理所有权：${STATE_FILE_PROXY_MANAGED:-未记录}"
+    log "状态文件 TLS 启用：${STATE_FILE_TLS_ENABLED:-未记录}"
     log "状态文件 TLS 管理：${STATE_FILE_TLS_MANAGED:-未记录}"
     if [[ -n "$STATE_FILE_DOMAIN" ]]; then
       log "状态文件域名：$STATE_FILE_DOMAIN"
@@ -442,11 +486,71 @@ show_detection_summary() {
   fi
 }
 
+prompt_runtime_mode_if_needed() {
+  if [[ "$MODE_EXPLICIT" -eq 1 ]]; then
+    return
+  fi
+
+  if [[ "$INSTALL_STATE" == "installed" ]]; then
+    case "$STATE_FILE_DEPLOY_MODE" in
+      docker|node)
+        MODE="$STATE_FILE_DEPLOY_MODE"
+        log "沿用部署状态文件中的运行模式：$MODE"
+        return
+        ;;
+    esac
+    case "$RUNTIME_DEPLOY_MODE" in
+      docker|node)
+        MODE="$RUNTIME_DEPLOY_MODE"
+        log "沿用当前检测到的运行模式：$MODE"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    log "未显式指定运行模式，非交互模式默认使用：$MODE"
+    return
+  fi
+
+  local selected=""
+  while true; do
+    cat <<'RUNTIME_MODE_MENU'
+
+请选择 Arcade Atlas 运行模式：
+  [1] Docker Compose（推荐）
+  [2] Node.js + nohup
+RUNTIME_MODE_MENU
+    read -r -p '请输入 1 或 2: ' selected
+    case "$selected" in
+      1) MODE="docker"; return ;;
+      2) MODE="node"; return ;;
+      *) warn '无效选择，请输入 1 或 2。' ;;
+    esac
+  done
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --mode)
         MODE="${2:-}"
+        MODE_EXPLICIT=1
+        shift 2
+        ;;
+      --access-mode)
+        ACCESS_MODE="${2:-}"
+        ACCESS_MODE_EXPLICIT=1
+        shift 2
+        ;;
+      --domain)
+        DOMAIN_ARG="${2:-}"
+        DOMAIN_EXPLICIT=1
+        shift 2
+        ;;
+      --acme-email)
+        ACME_EMAIL_ARG="${2:-}"
+        ACME_EMAIL_EXPLICIT=1
         shift 2
         ;;
       --target-dir)
@@ -485,6 +589,15 @@ parse_args() {
       fail_step "--mode 仅支持 docker 或 node"
       ;;
   esac
+
+  if [[ -n "$ACCESS_MODE" ]]; then
+    case "$ACCESS_MODE" in
+      managed_https|external_proxy|direct_http) ;;
+      *)
+        fail_step "--access-mode 仅支持 managed_https、external_proxy 或 direct_http"
+        ;;
+    esac
+  fi
 }
 
 ensure_base_commands() {
@@ -693,7 +806,46 @@ validate_http_url() {
   [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]] || fail_step "APP_URL 必须是合法的 http:// 或 https:// 地址。"
 }
 
-infer_deployment_access_metadata() {
+http_url_is_valid() {
+  local value="$1"
+  [[ "$value" =~ ^https?://[^[:space:]/?#]+([:/?#].*)?$ ]]
+}
+
+validate_domain_name() {
+  local value="$1"
+  python3 - "$value" <<'PYTHON_VALIDATE_DOMAIN'
+import re
+import sys
+
+value = sys.argv[1].strip().rstrip('.')
+if not value or len(value) > 253 or '.' not in value:
+    raise SystemExit(1)
+labels = value.split('.')
+pattern = re.compile(r'^[A-Za-z0-9-]{1,63}$')
+for label in labels:
+    if not pattern.fullmatch(label) or label.startswith('-') or label.endswith('-'):
+        raise SystemExit(1)
+print(value.lower())
+PYTHON_VALIDATE_DOMAIN
+}
+
+validate_email_address() {
+  local value="$1"
+  [[ "$value" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail_step "ACME 邮箱格式不合法：$value"
+}
+
+extract_host_from_url() {
+  local app_url="$1"
+  python3 - "$app_url" <<'PYTHON_EXTRACT_HOST'
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1].strip())
+print((parsed.hostname or '').strip())
+PYTHON_EXTRACT_HOST
+}
+
+infer_compatibility_access_metadata() {
   local app_url="$1"
   python3 - "$app_url" <<'PYTHON_INFER_DEPLOYMENT_ACCESS_METADATA'
 import ipaddress
@@ -724,13 +876,109 @@ if host and not is_ip(host) and host.lower() != "localhost":
 if scheme == "https":
     access_mode = "external_proxy"
     proxy = "external"
+    tls_enabled = "true"
+else:
+    tls_enabled = "false"
 
+print(f"APP_URL={app_url}")
 print(f"ACCESS_MODE={access_mode}")
 print(f"DOMAIN={domain}")
 print(f"PROXY={proxy}")
+print("PROXY_MANAGED=false")
+print(f"TLS_ENABLED={tls_enabled}")
 print(f"TLS_MANAGED={tls_managed}")
 print(f"ACME_PROVIDER={acme_provider}")
 PYTHON_INFER_DEPLOYMENT_ACCESS_METADATA
+}
+
+apply_access_mode_runtime_defaults() {
+  case "$ACCESS_MODE" in
+    managed_https)
+      PROXY_KIND="nginx"
+      PROXY_MANAGED="true"
+      TLS_MANAGED="true"
+      ACME_PROVIDER_VALUE="letsencrypt"
+      APP_BIND_HOST_VALUE="0.0.0.0"
+      HOST_PORT_BIND_IP_VALUE="127.0.0.1"
+      TRUST_PROXY_CIDRS_VALUE="127.0.0.1/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+      ;;
+    external_proxy)
+      PROXY_KIND="external"
+      PROXY_MANAGED="false"
+      TLS_MANAGED="false"
+      ACME_PROVIDER_VALUE="none"
+      if [[ "$MODE" == "docker" ]]; then
+        APP_BIND_HOST_VALUE="0.0.0.0"
+      else
+        APP_BIND_HOST_VALUE="127.0.0.1"
+      fi
+      HOST_PORT_BIND_IP_VALUE="127.0.0.1"
+      TRUST_PROXY_CIDRS_VALUE="127.0.0.1/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+      ;;
+    direct_http)
+      PROXY_KIND="none"
+      PROXY_MANAGED="false"
+      TLS_MANAGED="false"
+      ACME_PROVIDER_VALUE="none"
+      APP_BIND_HOST_VALUE="0.0.0.0"
+      HOST_PORT_BIND_IP_VALUE="0.0.0.0"
+      TRUST_PROXY_CIDRS_VALUE=""
+      ;;
+    *)
+      fail_step "未知访问模式：$ACCESS_MODE"
+      ;;
+  esac
+}
+
+load_access_configuration_from_lines() {
+  local metadata_line=""
+  while IFS= read -r metadata_line; do
+    case "$metadata_line" in
+      APP_URL=*) CURRENT_APP_URL="${metadata_line#APP_URL=}" ;;
+      ACCESS_MODE=*) ACCESS_MODE="${metadata_line#ACCESS_MODE=}" ;;
+      DOMAIN=*) ACCESS_DOMAIN="${metadata_line#DOMAIN=}" ;;
+      PROXY=*) PROXY_KIND="${metadata_line#PROXY=}" ;;
+      PROXY_MANAGED=*) PROXY_MANAGED="${metadata_line#PROXY_MANAGED=}" ;;
+      TLS_ENABLED=*) TLS_ENABLED="${metadata_line#TLS_ENABLED=}" ;;
+      TLS_MANAGED=*) TLS_MANAGED="${metadata_line#TLS_MANAGED=}" ;;
+      ACME_PROVIDER=*) ACME_PROVIDER_VALUE="${metadata_line#ACME_PROVIDER=}" ;;
+    esac
+  done
+  DESIRED_APP_URL="$CURRENT_APP_URL"
+  if [[ -z "$DESIRED_APP_URL" && -n "$ACCESS_DOMAIN" ]]; then
+    if [[ "$TLS_ENABLED" == "true" ]]; then
+      DESIRED_APP_URL="https://$ACCESS_DOMAIN"
+    else
+      DESIRED_APP_URL="http://$ACCESS_DOMAIN"
+    fi
+  fi
+}
+
+infer_access_configuration_from_app_url() {
+  local app_url="$1"
+  local metadata_line=""
+  ACCESS_MODE=""
+  ACCESS_DOMAIN=""
+  PROXY_KIND="none"
+  PROXY_MANAGED="false"
+  TLS_ENABLED="false"
+  TLS_MANAGED="false"
+  ACME_PROVIDER_VALUE="none"
+  CURRENT_APP_URL=""
+  DESIRED_APP_URL=""
+  while IFS= read -r metadata_line; do
+    case "$metadata_line" in
+      APP_URL=*) CURRENT_APP_URL="${metadata_line#APP_URL=}" ;;
+      ACCESS_MODE=*) ACCESS_MODE="${metadata_line#ACCESS_MODE=}" ;;
+      DOMAIN=*) ACCESS_DOMAIN="${metadata_line#DOMAIN=}" ;;
+      PROXY=*) PROXY_KIND="${metadata_line#PROXY=}" ;;
+      PROXY_MANAGED=*) PROXY_MANAGED="${metadata_line#PROXY_MANAGED=}" ;;
+      TLS_ENABLED=*) TLS_ENABLED="${metadata_line#TLS_ENABLED=}" ;;
+      TLS_MANAGED=*) TLS_MANAGED="${metadata_line#TLS_MANAGED=}" ;;
+      ACME_PROVIDER=*) ACME_PROVIDER_VALUE="${metadata_line#ACME_PROVIDER=}" ;;
+    esac
+  done < <(infer_compatibility_access_metadata "$app_url")
+  DESIRED_APP_URL="$CURRENT_APP_URL"
 }
 
 validate_port_value() {
@@ -1130,6 +1378,9 @@ configure_github_auth() {
   local app_url callback_url client_id client_secret allowlist allow_first_login
 
   app_url="$(read_env_value "$env_file" "APP_URL")"
+  if [[ "$ACCESS_MODE" == "managed_https" && -n "$DESIRED_APP_URL" ]]; then
+    app_url="$DESIRED_APP_URL"
+  fi
   callback_url="${app_url%/}/auth/github/callback"
 
   cat <<GITHUB_OAUTH_HELP
@@ -1224,6 +1475,208 @@ AUTH_MODE_MENU
   done
 }
 
+set_access_runtime_env_values() {
+  local env_file="$1"
+  set_env_value "$env_file" "APP_URL" "$CURRENT_APP_URL"
+  set_env_value "$env_file" "APP_BIND_HOST" "$APP_BIND_HOST_VALUE"
+  set_env_value "$env_file" "HOST_PORT_BIND_IP" "$HOST_PORT_BIND_IP_VALUE"
+  set_env_value "$env_file" "TRUST_PROXY_CIDRS" "$TRUST_PROXY_CIDRS_VALUE"
+}
+
+prompt_access_mode_choice() {
+  local selected=""
+
+  if [[ "$ACCESS_MODE_EXPLICIT" -eq 1 ]]; then
+    return
+  fi
+
+  if [[ "$SELECTED_ACTION" == "upgrade" ]]; then
+    local existing_app_url=""
+    existing_app_url="$(read_env_value "$1" "APP_URL" 2>/dev/null || true)"
+    if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+      CURRENT_APP_URL="${STATE_FILE_APP_URL:-$existing_app_url}"
+      ACCESS_MODE="${STATE_FILE_ACCESS_MODE:-}"
+      ACCESS_DOMAIN="${STATE_FILE_DOMAIN:-}"
+      PROXY_KIND="${STATE_FILE_PROXY:-none}"
+      PROXY_MANAGED="${STATE_FILE_PROXY_MANAGED:-false}"
+      TLS_ENABLED="${STATE_FILE_TLS_ENABLED:-false}"
+      TLS_MANAGED="${STATE_FILE_TLS_MANAGED:-false}"
+      ACME_PROVIDER_VALUE="${STATE_FILE_ACME_PROVIDER:-none}"
+      if [[ -z "$ACCESS_MODE" && -n "$CURRENT_APP_URL" ]]; then
+        infer_access_configuration_from_app_url "$CURRENT_APP_URL"
+      fi
+      if [[ -z "$ACCESS_MODE" ]]; then
+        ACCESS_MODE="direct_http"
+      fi
+      DESIRED_APP_URL="$CURRENT_APP_URL"
+      if [[ "$ACCESS_MODE" == "managed_https" && -n "$ACCESS_DOMAIN" && "$TLS_ENABLED" != "true" ]]; then
+        DESIRED_APP_URL="https://$ACCESS_DOMAIN"
+      fi
+      apply_access_mode_runtime_defaults
+      set_access_runtime_env_values "$1"
+      log "沿用部署状态文件中的访问模式：$ACCESS_MODE"
+      return
+    fi
+
+    if [[ -n "$existing_app_url" ]]; then
+      infer_access_configuration_from_app_url "$existing_app_url"
+      apply_access_mode_runtime_defaults
+      set_access_runtime_env_values "$1"
+      log "部署状态文件缺少访问模式元数据，已根据 APP_URL 兼容推导：$ACCESS_MODE"
+      return
+    fi
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    local non_interactive_app_url=""
+    non_interactive_app_url="$(read_env_value "$1" "APP_URL" 2>/dev/null || true)"
+    if [[ -z "$ACCESS_MODE" && -n "$non_interactive_app_url" ]]; then
+      infer_access_configuration_from_app_url "$non_interactive_app_url"
+    fi
+    [[ -n "$ACCESS_MODE" ]] || ACCESS_MODE="direct_http"
+    return
+  fi
+
+  while true; do
+    cat <<'ACCESS_MODE_MENU'
+
+请选择站点访问方式：
+
+1) 自动配置 HTTPS [推荐]
+   自动配置 Nginx + Let's Encrypt
+
+2) 已有反向代理 / 面板
+   适用于 1Panel、宝塔、Caddy、Nginx Proxy Manager、
+   Traefik、Cloudflare Tunnel 等
+
+3) 直接 HTTP 访问
+   适合内网或测试环境
+ACCESS_MODE_MENU
+    read -r -p '请输入 1-3: ' selected
+    case "$selected" in
+      1) ACCESS_MODE="managed_https"; return ;;
+      2) ACCESS_MODE="external_proxy"; return ;;
+      3) ACCESS_MODE="direct_http"; return ;;
+      *) warn '无效选择，请输入 1、2 或 3。' ;;
+    esac
+  done
+}
+
+configure_managed_https_inputs() {
+  local env_file="$1"
+  local current_domain="$DOMAIN_ARG"
+  local current_email="$ACME_EMAIL_ARG"
+  local current_app_url desired_host=""
+
+  current_app_url="$(read_env_value "$env_file" "APP_URL" 2>/dev/null || true)"
+  if [[ -z "$current_domain" && -n "$current_app_url" ]]; then
+    desired_host="$(extract_host_from_url "$current_app_url")"
+    if validate_domain_name "$desired_host" >/dev/null 2>&1; then
+      current_domain="$desired_host"
+    fi
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    [[ -n "$current_domain" ]] || fail_step "managed_https 模式需要通过 --domain 提供域名，或预先将 APP_URL 设置为 https://域名。"
+    [[ -n "$current_email" ]] || fail_step "managed_https 模式需要通过 --acme-email 提供 ACME 邮箱。"
+  else
+    if [[ -n "$current_domain" ]]; then
+      read -r -p "域名 [$current_domain]: " ACCESS_DOMAIN
+      ACCESS_DOMAIN="${ACCESS_DOMAIN:-$current_domain}"
+    else
+      read -r -p '域名: ' ACCESS_DOMAIN
+    fi
+    if [[ -n "$current_email" ]]; then
+      read -r -p "ACME 邮箱 [$current_email]: " ACME_EMAIL_VALUE
+      ACME_EMAIL_VALUE="${ACME_EMAIL_VALUE:-$current_email}"
+    else
+      read -r -p 'ACME 邮箱: ' ACME_EMAIL_VALUE
+    fi
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    ACCESS_DOMAIN="$current_domain"
+    ACME_EMAIL_VALUE="$current_email"
+  fi
+
+  ACCESS_DOMAIN="$(validate_domain_name "$ACCESS_DOMAIN")" || fail_step "managed_https 域名格式不合法：$ACCESS_DOMAIN"
+  validate_email_address "$ACME_EMAIL_VALUE"
+
+  DESIRED_APP_URL="https://$ACCESS_DOMAIN"
+  CURRENT_APP_URL="http://$ACCESS_DOMAIN"
+  TLS_ENABLED="false"
+  apply_access_mode_runtime_defaults
+  set_access_runtime_env_values "$env_file"
+
+  precheck_managed_https_environment
+}
+
+configure_external_proxy_inputs() {
+  local env_file="$1"
+  local current_app_url
+  current_app_url="$(read_env_value "$env_file" "APP_URL" 2>/dev/null || true)"
+  if [[ "$current_app_url" == "http://localhost:3000" ]]; then
+    current_app_url=""
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    DESIRED_APP_URL="${current_app_url}"
+  else
+    prompt_value "$env_file" "APP_URL" "请输入最终完整访问地址（例如 https://atlas.example.com）" "${current_app_url:-}"
+    DESIRED_APP_URL="$(read_env_value "$env_file" "APP_URL")"
+  fi
+  validate_http_url "$DESIRED_APP_URL"
+  CURRENT_APP_URL="$DESIRED_APP_URL"
+  ACCESS_DOMAIN="$(extract_host_from_url "$CURRENT_APP_URL")"
+  TLS_ENABLED="$([[ "$CURRENT_APP_URL" == https://* ]] && printf 'true' || printf 'false')"
+  apply_access_mode_runtime_defaults
+  set_access_runtime_env_values "$env_file"
+}
+
+configure_direct_http_inputs() {
+  local env_file="$1"
+  local port current_app_url
+  port="$(read_env_value "$env_file" "PORT" 2>/dev/null || printf '3000')"
+  current_app_url="$(read_env_value "$env_file" "APP_URL" 2>/dev/null || true)"
+  if [[ "$current_app_url" == "http://localhost:3000" || "$current_app_url" == https://* ]]; then
+    current_app_url=""
+  fi
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    DESIRED_APP_URL="$current_app_url"
+  else
+    prompt_value "$env_file" "APP_URL" "请输入 HTTP 访问地址（例如 http://服务器IP:${port}）" "${current_app_url:-}"
+    DESIRED_APP_URL="$(read_env_value "$env_file" "APP_URL")"
+  fi
+  validate_http_url "$DESIRED_APP_URL"
+  [[ "$DESIRED_APP_URL" == http://* ]] || fail_step "direct_http 模式要求 APP_URL 必须是 http:// 地址。"
+  CURRENT_APP_URL="$DESIRED_APP_URL"
+  ACCESS_DOMAIN="$(extract_host_from_url "$CURRENT_APP_URL")"
+  TLS_ENABLED="false"
+  apply_access_mode_runtime_defaults
+  set_access_runtime_env_values "$env_file"
+}
+
+configure_access_mode() {
+  local env_file="$1"
+
+  prompt_access_mode_choice "$env_file"
+  case "$ACCESS_MODE" in
+    managed_https)
+      configure_managed_https_inputs "$env_file"
+      ;;
+    external_proxy)
+      configure_external_proxy_inputs "$env_file"
+      ;;
+    direct_http)
+      configure_direct_http_inputs "$env_file"
+      ;;
+    *)
+      fail_step "未知访问模式：$ACCESS_MODE"
+      ;;
+  esac
+}
+
 prepare_env_file() {
   local env_file="$TARGET_DIR/.env"
   local example_file="$TARGET_DIR/.env.example"
@@ -1241,17 +1694,7 @@ prepare_env_file() {
   append_missing_env_keys "$env_file" "$example_file"
 
   local default_database_path="./data/arcade-atlas.sqlite"
-  local app_url port database_path
-
-  app_url="$(read_env_value "$env_file" "APP_URL")"
-  if [[ -z "$app_url" || "$app_url" == "http://localhost:3000" ]]; then
-    if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
-      fail_step "必须配置 APP_URL，不能保留默认值 http://localhost:3000。"
-    fi
-    prompt_value "$env_file" "APP_URL" "请输入系统最终访问地址（例如 https://atlas.example.com 或 http://服务器IP:3000）" "${app_url:-http://localhost:3000}"
-    app_url="$(read_env_value "$env_file" "APP_URL")"
-  fi
-  validate_http_url "$app_url"
+  local port database_path
 
   port="$(read_env_value "$env_file" "PORT")"
   if [[ -z "$port" ]]; then
@@ -1264,6 +1707,13 @@ prepare_env_file() {
   if [[ -z "$database_path" || "$database_path" == "./data/arcade-atlas.sqlite" ]]; then
     set_env_value "$env_file" "DATABASE_PATH" "$default_database_path"
   fi
+
+  configure_access_mode "$env_file"
+
+  if [[ -z "$CURRENT_APP_URL" || "$CURRENT_APP_URL" == "http://localhost:3000" ]]; then
+    fail_step "必须配置 APP_URL，不能保留默认值 http://localhost:3000。"
+  fi
+  validate_http_url "$CURRENT_APP_URL"
 
   if [[ "$env_created" -eq 1 ]]; then
     choose_auth_mode "$env_file"
@@ -1330,6 +1780,138 @@ check_port() {
     set_env_value "$env_file" "PORT" "$new_port"
     log "已将 PORT 更新为 $new_port"
   fi
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+service_is_active() {
+  local service_name="$1"
+  command_exists systemctl || return 1
+  $SUDO systemctl is-active --quiet "$service_name" >/dev/null 2>&1
+}
+
+port_listener_description() {
+  local port="$1"
+  if command_exists lsof; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print $1 " pid=" $2 " user=" $3 " " $9}' | paste -sd '; ' -
+    return 0
+  fi
+
+  if command_exists ss; then
+    ss -ltnp "( sport = :$port )" 2>/dev/null | awk 'NR>1 {print $0}' | paste -sd '; ' -
+    return 0
+  fi
+
+  return 1
+}
+
+port_is_listened_by_process() {
+  local port="$1"
+  local process_name="$2"
+  local description=""
+  description="$(port_listener_description "$port" 2>/dev/null || true)"
+  [[ "$description" == *"$process_name"* ]]
+}
+
+managed_proxy_owned() {
+  [[ "$STATE_FILE_ACCESS_MODE" == "managed_https" && "$STATE_FILE_PROXY" == "nginx" && "$STATE_FILE_PROXY_MANAGED" == "true" ]]
+}
+
+managed_tls_owned() {
+  [[ "$STATE_FILE_ACCESS_MODE" == "managed_https" && "$STATE_FILE_TLS_MANAGED" == "true" ]]
+}
+
+handle_managed_https_conflict() {
+  local env_file="$1"
+  shift
+  local issues=("$@")
+  local issue choice=""
+
+  MANAGED_HTTPS_PRECHECK_STATUS="conflict"
+  warn '检测到现有 Web Server / 反向代理环境。'
+  for issue in "${issues[@]}"; do
+    warn "  - $issue"
+  done
+  warn '为避免破坏现有站点，Arcade Atlas 自动 HTTPS 模式不会接管未知来源的 Web Server 配置。'
+
+  if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+    fail_step 'managed_https 预检查失败。' "${issues[@]}"
+  fi
+
+  while true; do
+    cat <<'MANAGED_HTTPS_CONFLICT_MENU'
+
+请选择：
+  [1] 改用“已有反向代理 / 面板”模式
+  [2] 退出安装并手动处理
+MANAGED_HTTPS_CONFLICT_MENU
+    read -r -p '请输入 1 或 2: ' choice
+    case "$choice" in
+      1)
+        ACCESS_MODE="external_proxy"
+        DESIRED_APP_URL="https://$ACCESS_DOMAIN"
+        CURRENT_APP_URL="$DESIRED_APP_URL"
+        TLS_ENABLED="true"
+        apply_access_mode_runtime_defaults
+        set_access_runtime_env_values "$env_file"
+        MANAGED_HTTPS_PRECHECK_STATUS="fallback-external-proxy"
+        log "已切换到 external_proxy 模式，Arcade Atlas 不会改动现有反向代理。"
+        return
+        ;;
+      2)
+        fail_step '用户取消 managed HTTPS 自动配置。'
+        ;;
+      *)
+        warn '无效选择，请输入 1 或 2。'
+        ;;
+    esac
+  done
+}
+
+precheck_managed_https_environment() {
+  local issues=()
+  local description=""
+
+  log '正在检查 managed HTTPS 部署条件...'
+
+  if [[ -d /opt/1panel || -x /usr/local/bin/1panel ]] || service_is_active 1panel; then
+    issues+=('检测到 1Panel 环境。')
+  fi
+  if [[ -d /www/server/panel || -x /etc/init.d/bt ]]; then
+    issues+=('检测到宝塔面板环境。')
+  fi
+  if [[ -f /etc/caddy/Caddyfile ]] || command_exists caddy || service_is_active caddy; then
+    issues+=('检测到现有 Caddy。')
+  fi
+  if [[ -f /etc/nginx/nginx.conf || -d /etc/nginx/sites-enabled ]] || command_exists nginx; then
+    if ! managed_proxy_owned; then
+      issues+=('检测到现有 Nginx，但未发现 Arcade Atlas 自己管理的站点所有权。')
+    fi
+  fi
+  if port_in_use 80; then
+    description="$(port_listener_description 80 2>/dev/null || printf 'unknown')"
+    if ! managed_proxy_owned || ! port_is_listened_by_process 80 nginx; then
+      issues+=("TCP 80 已被占用：${description}")
+    fi
+  fi
+  if port_in_use 443; then
+    description="$(port_listener_description 443 2>/dev/null || printf 'unknown')"
+    if ! managed_proxy_owned || ! port_is_listened_by_process 443 nginx; then
+      issues+=("TCP 443 已被占用：${description}")
+    fi
+  fi
+
+  if [[ "${#issues[@]}" -gt 0 ]]; then
+    handle_managed_https_conflict "$TARGET_DIR/.env" "${issues[@]}"
+    return
+  fi
+
+  ensure_managed_https_dns_ready
+  MANAGED_HTTPS_PRECHECK_STATUS="ready"
+  log "域名：$ACCESS_DOMAIN"
+  log 'managed HTTPS 预检查通过：当前环境允许 Arcade Atlas 接管自己的 Nginx / TLS 资源。'
 }
 
 install_node_runtime() {
@@ -1649,7 +2231,6 @@ run_docker_deploy() {
   fi
 
   check_docker_container_status
-  run_health_check "$port"
 }
 
 stop_existing_node_service() {
@@ -1766,8 +2347,454 @@ run_node_deploy() {
   fi
 
   start_node_service "$pid_file" || fail_step 'Node 服务启动失败。' "请检查日志：$TARGET_DIR/.deploy/app.log"
+}
 
+restart_docker_runtime() {
+  if ! run_docker_compose_with_project_env up -d --force-recreate --no-build arcade-atlas; then
+    fail_docker_container_status 'Docker Compose 重启失败。'
+  fi
+  check_docker_container_status
+}
+
+restart_node_runtime() {
+  local pid_file="$TARGET_DIR/.deploy/arcade-atlas.pid"
+  stop_existing_node_service
+  start_node_service "$pid_file" || fail_step 'Node 服务重启失败。' "请检查日志：$TARGET_DIR/.deploy/app.log"
+}
+
+restart_application_runtime() {
+  if [[ "$MODE" == "docker" ]]; then
+    restart_docker_runtime
+  else
+    restart_node_runtime
+  fi
+}
+
+get_domain_records() {
+  local family="$1"
+  local domain="$2"
+  case "$family" in
+    4)
+      getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u
+      ;;
+    6)
+      getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1}' | sort -u
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+get_local_global_addresses() {
+  local family="$1"
+  case "$family" in
+    4)
+      ip -o -4 addr show scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]}' | sort -u
+      ;;
+    6)
+      ip -o -6 addr show scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]}' | sort -u
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_managed_https_dns_ready() {
+  local ipv4_records ipv6_records local_ipv4 local_ipv6 record missing=0
+  ipv4_records="$(get_domain_records 4 "$ACCESS_DOMAIN" || true)"
+  ipv6_records="$(get_domain_records 6 "$ACCESS_DOMAIN" || true)"
+  local_ipv4="$(get_local_global_addresses 4 || true)"
+  local_ipv6="$(get_local_global_addresses 6 || true)"
+
+  log "DNS A 记录：${ipv4_records:-<none>}"
+  log "DNS AAAA 记录：${ipv6_records:-<none>}"
+
+  if [[ -z "$ipv4_records" && -z "$ipv6_records" ]]; then
+    fail_step 'managed HTTPS 需要域名先解析到当前服务器。' \
+      "域名：$ACCESS_DOMAIN" \
+      '当前未检测到可用的 A 或 AAAA 记录。'
+  fi
+
+  if [[ -n "$ipv4_records" ]]; then
+    while IFS= read -r record; do
+      [[ -z "$record" ]] && continue
+      if ! printf '%s\n' "$local_ipv4" | grep -Fxq "$record"; then
+        fail_step 'managed HTTPS 仅支持域名直接解析到当前服务器。' \
+          "A 记录 $record 不在当前机器的全局 IPv4 地址列表中。" \
+          '如使用 CDN / 代理 DNS / Tunnel，请改用“已有反向代理 / 面板”模式。'
+      fi
+    done <<<"$ipv4_records"
+  fi
+
+  if [[ -n "$ipv6_records" ]]; then
+    if [[ -z "$local_ipv6" ]]; then
+      fail_step '检测到 AAAA 记录，但当前服务器未识别到可用的全局 IPv6 地址。' \
+        "域名：$ACCESS_DOMAIN" \
+        '请修复 AAAA 记录，或改用“已有反向代理 / 面板”模式。'
+    fi
+    while IFS= read -r record; do
+      [[ -z "$record" ]] && continue
+      if ! printf '%s\n' "$local_ipv6" | grep -Fxq "$record"; then
+        fail_step 'managed HTTPS 检测到不匹配的 AAAA 记录。' \
+          "AAAA 记录 $record 不属于当前服务器。" \
+          '错误的 IPv6 记录会导致 ACME 与用户访问失败，请先修复。'
+      fi
+    done <<<"$ipv6_records"
+  fi
+}
+
+ensure_managed_https_directories() {
+  ensure_sudo
+  $SUDO install -d -m 0755 /etc/nginx/sites-available /etc/nginx/sites-enabled "$MANAGED_ACME_WEBROOT" "$MANAGED_ACME_HOME" "$MANAGED_NGINX_LOG_DIR"
+  $SUDO install -d -m 0750 "$MANAGED_TLS_DIR"
+}
+
+reload_nginx_if_valid() {
+  ensure_sudo
+  $SUDO nginx -t >/dev/null || return 1
+  if command_exists systemctl; then
+    $SUDO systemctl reload nginx >/dev/null
+  else
+    $SUDO nginx -s reload >/dev/null
+  fi
+}
+
+render_managed_nginx_http_config() {
+  local port="$1"
+  cat <<EOF
+$MANAGED_NGINX_SITE_MARKER
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $ACCESS_DOMAIN;
+
+    access_log $MANAGED_NGINX_LOG_DIR/access.log;
+    error_log $MANAGED_NGINX_LOG_DIR/error.log warn;
+
+    location /.well-known/acme-challenge/ {
+        root $MANAGED_ACME_WEBROOT;
+        default_type text/plain;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+}
+
+render_managed_nginx_https_config() {
+  local port="$1"
+  cat <<EOF
+$MANAGED_NGINX_SITE_MARKER
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $ACCESS_DOMAIN;
+
+    access_log $MANAGED_NGINX_LOG_DIR/access.log;
+    error_log $MANAGED_NGINX_LOG_DIR/error.log warn;
+
+    location /.well-known/acme-challenge/ {
+        root $MANAGED_ACME_WEBROOT;
+        default_type text/plain;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name $ACCESS_DOMAIN;
+
+    access_log $MANAGED_NGINX_LOG_DIR/access.log;
+    error_log $MANAGED_NGINX_LOG_DIR/error.log warn;
+
+    ssl_certificate $MANAGED_TLS_FULLCHAIN_PATH;
+    ssl_certificate_key $MANAGED_TLS_PRIVKEY_PATH;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:ArcadeAtlasSSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+}
+
+install_managed_nginx_config() {
+  local mode="$1"
+  local port="$2"
+  local temp_file candidate_file backup_file=""
+  local previous_enabled_target=""
+  local had_target=0
+  local had_enabled=0
+
+  temp_file="$(mktemp)"
+  if [[ "$mode" == "http" ]]; then
+    render_managed_nginx_http_config "$port" >"$temp_file"
+  else
+    render_managed_nginx_https_config "$port" >"$temp_file"
+  fi
+
+  ensure_managed_https_directories
+  ensure_sudo
+  candidate_file="${MANAGED_NGINX_SITE_AVAILABLE_PATH}.candidate"
+  if $SUDO test -e "$MANAGED_NGINX_SITE_AVAILABLE_PATH"; then
+    had_target=1
+    backup_file="$(mktemp)"
+    $SUDO cp "$MANAGED_NGINX_SITE_AVAILABLE_PATH" "$backup_file"
+  fi
+  if $SUDO test -L "$MANAGED_NGINX_SITE_ENABLED_PATH"; then
+    had_enabled=1
+    previous_enabled_target="$($SUDO readlink -f "$MANAGED_NGINX_SITE_ENABLED_PATH" 2>/dev/null || true)"
+  fi
+
+  $SUDO install -m 0644 "$temp_file" "$candidate_file"
+  $SUDO ln -sfn "$candidate_file" "$MANAGED_NGINX_SITE_ENABLED_PATH"
+  if ! $SUDO nginx -t >/dev/null 2>&1; then
+    if [[ "$had_enabled" -eq 1 && -n "$previous_enabled_target" ]]; then
+      $SUDO ln -sfn "$previous_enabled_target" "$MANAGED_NGINX_SITE_ENABLED_PATH"
+    else
+      $SUDO rm -f "$MANAGED_NGINX_SITE_ENABLED_PATH"
+    fi
+    if [[ "$had_target" -eq 1 && -n "$backup_file" ]]; then
+      $SUDO cp "$backup_file" "$MANAGED_NGINX_SITE_AVAILABLE_PATH"
+    else
+      $SUDO rm -f "$MANAGED_NGINX_SITE_AVAILABLE_PATH"
+    fi
+    $SUDO rm -f "$candidate_file"
+    rm -f "$temp_file" "$backup_file"
+    fail_step "Nginx 配置语法检查失败（$mode）。" '已保留现有有效配置，未执行 reload。'
+  fi
+
+  $SUDO mv "$candidate_file" "$MANAGED_NGINX_SITE_AVAILABLE_PATH"
+  $SUDO ln -sfn "$MANAGED_NGINX_SITE_AVAILABLE_PATH" "$MANAGED_NGINX_SITE_ENABLED_PATH"
+  if ! reload_nginx_if_valid; then
+    if [[ "$had_target" -eq 1 && -n "$backup_file" ]]; then
+      $SUDO cp "$backup_file" "$MANAGED_NGINX_SITE_AVAILABLE_PATH"
+      $SUDO ln -sfn "$MANAGED_NGINX_SITE_AVAILABLE_PATH" "$MANAGED_NGINX_SITE_ENABLED_PATH"
+      reload_nginx_if_valid || true
+    else
+      $SUDO rm -f "$MANAGED_NGINX_SITE_AVAILABLE_PATH" "$MANAGED_NGINX_SITE_ENABLED_PATH"
+    fi
+    rm -f "$temp_file" "$backup_file"
+    fail_step "Nginx reload 失败（$mode）。" '已尝试恢复先前配置。'
+  fi
+
+  rm -f "$temp_file" "$backup_file"
+}
+
+install_managed_https_prerequisites() {
+  step '[3/8] 配置 Nginx HTTP'
+  install_apt_packages nginx cron
+  ensure_sudo
+  if command_exists systemctl; then
+    $SUDO systemctl enable --now nginx >/dev/null 2>&1 || fail_step 'Nginx 安装后启动失败。' '请执行：sudo systemctl status nginx'
+    $SUDO systemctl enable --now cron >/dev/null 2>&1 || true
+  fi
+}
+
+verify_managed_http_challenge() {
+  local token_name token_value response=""
+  token_name="arcade-atlas-$(date +%s)-$$"
+  token_value="ok-${token_name}"
+  ensure_sudo
+  $SUDO install -d -m 0755 "$MANAGED_ACME_WEBROOT/.well-known/acme-challenge"
+  printf '%s' "$token_value" | $SUDO tee "$MANAGED_ACME_WEBROOT/.well-known/acme-challenge/$token_name" >/dev/null
+
+  if get_domain_records 4 "$ACCESS_DOMAIN" >/dev/null 2>&1 && [[ -n "$(get_domain_records 4 "$ACCESS_DOMAIN" || true)" ]]; then
+    response="$(curl -4 -fsS "http://$ACCESS_DOMAIN/.well-known/acme-challenge/$token_name" 2>/dev/null || true)"
+    [[ "$response" == "$token_value" ]] || fail_step 'HTTP-01 challenge IPv4 回流校验失败。' \
+      "请确认 http://$ACCESS_DOMAIN/.well-known/acme-challenge/$token_name 能直接到达当前服务器。"
+  fi
+  if get_domain_records 6 "$ACCESS_DOMAIN" >/dev/null 2>&1 && [[ -n "$(get_domain_records 6 "$ACCESS_DOMAIN" || true)" ]]; then
+    response="$(curl -6 -fsS "http://$ACCESS_DOMAIN/.well-known/acme-challenge/$token_name" 2>/dev/null || true)"
+    [[ "$response" == "$token_value" ]] || fail_step 'HTTP-01 challenge IPv6 回流校验失败。' \
+      "请确认 http://$ACCESS_DOMAIN/.well-known/acme-challenge/$token_name 能直接到达当前服务器。"
+  fi
+  $SUDO rm -f "$MANAGED_ACME_WEBROOT/.well-known/acme-challenge/$token_name"
+}
+
+install_acme_sh() {
+  if $SUDO test -x "$MANAGED_ACME_HOME/acme.sh"; then
+    return
+  fi
+
+  install_apt_packages cron
+  ensure_sudo
+  ensure_managed_https_directories
+  if ! curl -fsSL https://get.acme.sh | $SUDO env HOME=/root sh -s -- --home "$MANAGED_ACME_HOME" --config-home "$MANAGED_ACME_HOME" --accountemail "$ACME_EMAIL_VALUE"; then
+    fail_step 'acme.sh 安装失败。' '请检查服务器是否能访问 https://get.acme.sh'
+  fi
+  $SUDO "$MANAGED_ACME_HOME/acme.sh" --set-default-ca --server letsencrypt --home "$MANAGED_ACME_HOME" --config-home "$MANAGED_ACME_HOME" >/dev/null
+  $SUDO "$MANAGED_ACME_HOME/acme.sh" --install-cronjob --home "$MANAGED_ACME_HOME" --config-home "$MANAGED_ACME_HOME" >/dev/null || true
+}
+
+issue_managed_https_certificate() {
+  ensure_sudo
+  ensure_managed_https_directories
+  install_acme_sh
+  if ! $SUDO "$MANAGED_ACME_HOME/acme.sh" --issue --server letsencrypt --domain "$ACCESS_DOMAIN" --webroot "$MANAGED_ACME_WEBROOT" --home "$MANAGED_ACME_HOME" --config-home "$MANAGED_ACME_HOME"; then
+    return 1
+  fi
+  if ! $SUDO "$MANAGED_ACME_HOME/acme.sh" --install-cert --server letsencrypt --domain "$ACCESS_DOMAIN" --home "$MANAGED_ACME_HOME" --config-home "$MANAGED_ACME_HOME" --fullchain-file "$MANAGED_TLS_FULLCHAIN_PATH" --key-file "$MANAGED_TLS_PRIVKEY_PATH" --reloadcmd "sh -c 'nginx -t && { systemctl reload nginx || nginx -s reload; }'"; then
+    return 1
+  fi
+  $SUDO chmod 0644 "$MANAGED_TLS_FULLCHAIN_PATH"
+  $SUDO chmod 0600 "$MANAGED_TLS_PRIVKEY_PATH"
+  return 0
+}
+
+verify_https_health() {
+  local url="https://$ACCESS_DOMAIN/health"
+  local response=""
+  response="$(curl -fsS "$url" 2>/dev/null || true)"
+  [[ -n "$response" ]] \
+    && printf '%s' "$response" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' \
+    && printf '%s' "$response" | grep -q '"initialized"[[:space:]]*:[[:space:]]*true'
+}
+
+verify_https_redirect() {
+  local redirect_url=""
+  redirect_url="$(curl -fsSIL -o /dev/null -w '%{redirect_url}' "http://$ACCESS_DOMAIN/" 2>/dev/null || true)"
+  [[ "$redirect_url" == "https://$ACCESS_DOMAIN/"* ]]
+}
+
+write_partial_managed_state() {
+  FINAL_SUMMARY_HEADER='Arcade Atlas 部署部分完成'
+  TLS_ENABLED="false"
+  CURRENT_APP_URL="http://$ACCESS_DOMAIN"
+  set_access_runtime_env_values "$TARGET_DIR/.env"
+  write_deployment_state_file partial
+}
+
+run_managed_https_fresh_flow() {
+  local port="$1"
+
+  install_managed_https_prerequisites
+  ensure_managed_https_dns_ready
+  install_managed_nginx_config http "$port"
+
+  step '[4/8] 验证 ACME challenge'
+  verify_managed_http_challenge
+
+  step '[5/8] 申请 TLS 证书'
+  if ! issue_managed_https_certificate; then
+    warn 'HTTPS 证书申请失败，保留 HTTP 访问作为 partial 状态。'
+    write_partial_managed_state
+    return 0
+  fi
+
+  step '[6/8] 启用 HTTPS'
+  install_managed_nginx_config https "$port"
+  TLS_ENABLED="true"
+  CURRENT_APP_URL="$DESIRED_APP_URL"
+
+  step '[7/8] 更新应用外部地址'
+  set_access_runtime_env_values "$TARGET_DIR/.env"
+  restart_application_runtime
   run_health_check "$port"
+
+  step '[8/8] 验证最终部署'
+  if ! verify_https_redirect || ! verify_https_health; then
+    warn 'HTTPS 最终验证失败，正在回退到 HTTP partial 状态。'
+    install_managed_nginx_config http "$port"
+    CURRENT_APP_URL="http://$ACCESS_DOMAIN"
+    TLS_ENABLED="false"
+    set_access_runtime_env_values "$TARGET_DIR/.env"
+    restart_application_runtime
+    run_health_check "$port"
+    write_partial_managed_state
+    return 0
+  fi
+  write_deployment_state_file healthy
+}
+
+run_managed_https_upgrade_flow() {
+  local port="$1"
+  local previous_app_url previous_deploy_status
+  previous_app_url="$(read_env_value "$TARGET_DIR/.env" "APP_URL" 2>/dev/null || true)"
+  previous_deploy_status="${STATE_FILE_DEPLOY_STATUS:-healthy}"
+
+  step '[3/5] 校验受管 HTTPS 资源'
+  ACCESS_DOMAIN="${ACCESS_DOMAIN:-${STATE_FILE_DOMAIN:-$(extract_host_from_url "$previous_app_url")}}"
+  [[ -n "$ACCESS_DOMAIN" ]] || fail_step '无法从现有部署中识别受管 HTTPS 域名。'
+  DESIRED_APP_URL="https://$ACCESS_DOMAIN"
+  CURRENT_APP_URL="$DESIRED_APP_URL"
+  TLS_ENABLED="true"
+  apply_access_mode_runtime_defaults
+  install_apt_packages nginx
+  ensure_managed_https_directories
+  if [[ ! -f "$MANAGED_TLS_FULLCHAIN_PATH" || ! -f "$MANAGED_TLS_PRIVKEY_PATH" ]]; then
+    step '[4/5] 修复证书资源'
+    issue_managed_https_certificate || fail_step '受管 HTTPS 证书缺失且自动修复失败。'
+  fi
+
+  install_managed_nginx_config https "$port"
+
+  if [[ "$previous_app_url" != "$DESIRED_APP_URL" ]]; then
+    step '[4/5] 更新应用外部地址'
+    set_access_runtime_env_values "$TARGET_DIR/.env"
+    restart_application_runtime
+    run_health_check "$port"
+  fi
+
+  step '[5/5] 验证 HTTPS 健康状态'
+  if ! verify_https_redirect || ! verify_https_health; then
+    if [[ -n "$previous_app_url" && "$previous_app_url" != "$DESIRED_APP_URL" ]]; then
+      warn '升级后的 HTTPS 验证失败，正在恢复原 APP_URL。'
+      CURRENT_APP_URL="$previous_app_url"
+      TLS_ENABLED="$([[ "$CURRENT_APP_URL" == https://* ]] && printf 'true' || printf 'false')"
+      set_access_runtime_env_values "$TARGET_DIR/.env"
+      restart_application_runtime
+      run_health_check "$port"
+      write_deployment_state_file "$previous_deploy_status"
+    fi
+    fail_step '升级后的 HTTPS 健康检查失败。'
+  fi
+  write_deployment_state_file healthy
+}
+
+run_access_mode_post_deploy() {
+  local env_file="$TARGET_DIR/.env"
+  local port
+  port="$(read_env_value "$env_file" "PORT")"
+
+  if [[ "$ACCESS_MODE" == "managed_https" ]]; then
+    if [[ "$SELECTED_ACTION" == "upgrade" && "$STATE_FILE_ACCESS_MODE" == "managed_https" && "$STATE_FILE_PROXY_MANAGED" == "true" && "$STATE_FILE_TLS_MANAGED" == "true" ]]; then
+      run_managed_https_upgrade_flow "$port"
+    else
+      run_managed_https_fresh_flow "$port"
+    fi
+    return
+  fi
+
+  CURRENT_APP_URL="$(read_env_value "$env_file" "APP_URL")"
+  DESIRED_APP_URL="$CURRENT_APP_URL"
+  ACCESS_DOMAIN="${ACCESS_DOMAIN:-$(extract_host_from_url "$CURRENT_APP_URL")}"
+  TLS_ENABLED="$([[ "$CURRENT_APP_URL" == https://* ]] && printf 'true' || printf 'false')"
+  apply_access_mode_runtime_defaults
+  write_deployment_state_file healthy
 }
 
 run_health_check() {
@@ -1785,7 +2812,6 @@ run_health_check() {
       DATABASE_STATUS="异常"
     fi
     SERVICE_STATUS="正常"
-    write_deployment_state_file
     return
   fi
 
@@ -1802,7 +2828,7 @@ deployment_state_file_path() {
 
 write_deployment_state_file() {
   local deploy_status="${1:-healthy}"
-  local state_file temp_file deployed_version env_file app_url metadata_line access_mode domain proxy tls_managed acme_provider
+  local state_file temp_file deployed_version env_file app_url access_mode domain proxy proxy_managed tls_enabled tls_managed acme_provider
   case "$deploy_status" in
     healthy|partial) ;;
     *)
@@ -1819,24 +2845,35 @@ write_deployment_state_file() {
   else
     validate_http_url "$app_url"
   fi
-  while IFS= read -r metadata_line; do
-    case "$metadata_line" in
-      ACCESS_MODE=*) access_mode="${metadata_line#ACCESS_MODE=}" ;;
-      DOMAIN=*) domain="${metadata_line#DOMAIN=}" ;;
-      PROXY=*) proxy="${metadata_line#PROXY=}" ;;
-      TLS_MANAGED=*) tls_managed="${metadata_line#TLS_MANAGED=}" ;;
-      ACME_PROVIDER=*) acme_provider="${metadata_line#ACME_PROVIDER=}" ;;
-    esac
-  done < <(infer_deployment_access_metadata "$app_url")
+  access_mode="${ACCESS_MODE:-}"
+  domain="${ACCESS_DOMAIN:-}"
+  proxy="${PROXY_KIND:-}"
+  proxy_managed="${PROXY_MANAGED:-}"
+  tls_enabled="${TLS_ENABLED:-}"
+  tls_managed="${TLS_MANAGED:-}"
+  acme_provider="${ACME_PROVIDER_VALUE:-}"
+  if [[ -z "$access_mode" || -z "$proxy" || -z "$proxy_managed" || -z "$tls_enabled" || -z "$tls_managed" || -z "$acme_provider" ]]; then
+    infer_access_configuration_from_app_url "$app_url"
+    access_mode="${ACCESS_MODE:-direct_http}"
+    domain="${ACCESS_DOMAIN:-}"
+    proxy="${PROXY_KIND:-none}"
+    proxy_managed="${PROXY_MANAGED:-false}"
+    tls_enabled="${TLS_ENABLED:-false}"
+    tls_managed="${TLS_MANAGED:-false}"
+    acme_provider="${ACME_PROVIDER_VALUE:-none}"
+  fi
   temp_file="$(mktemp)"
   cat >"$temp_file" <<EOF
 DEPLOY_MODE=$MODE
 DEPLOY_STATUS=$deploy_status
 DEPLOY_VERSION=$deployed_version
 TARGET_DIR=$TARGET_DIR
+APP_URL=$app_url
 ACCESS_MODE=${access_mode:-direct_http}
 DOMAIN=${domain:-}
 PROXY=${proxy:-none}
+PROXY_MANAGED=${proxy_managed:-false}
+TLS_ENABLED=${tls_enabled:-false}
 TLS_MANAGED=${tls_managed:-false}
 ACME_PROVIDER=${acme_provider:-none}
 UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1845,16 +2882,19 @@ EOF
 }
 
 detect_deployment_state_file_status() {
-  local state_file mode_value status_value version_value target_dir_value access_mode_value domain_value proxy_value tls_managed_value acme_provider_value
+  local state_file mode_value status_value version_value target_dir_value app_url_value access_mode_value domain_value proxy_value proxy_managed_value tls_enabled_value tls_managed_value acme_provider_value env_app_url
   state_file="$(deployment_state_file_path)"
   DEPLOYMENT_STATE_FILE_STATUS="missing"
   STATE_FILE_DEPLOY_MODE=""
   STATE_FILE_DEPLOY_STATUS=""
   STATE_FILE_DEPLOY_VERSION=""
   STATE_FILE_TARGET_DIR=""
+  STATE_FILE_APP_URL=""
   STATE_FILE_ACCESS_MODE=""
   STATE_FILE_DOMAIN=""
   STATE_FILE_PROXY=""
+  STATE_FILE_PROXY_MANAGED=""
+  STATE_FILE_TLS_ENABLED=""
   STATE_FILE_TLS_MANAGED=""
   STATE_FILE_ACME_PROVIDER=""
 
@@ -1864,9 +2904,12 @@ detect_deployment_state_file_status() {
   status_value="$(read_env_value "$state_file" "DEPLOY_STATUS" 2>/dev/null || true)"
   version_value="$(read_env_value "$state_file" "DEPLOY_VERSION" 2>/dev/null || true)"
   target_dir_value="$(read_env_value "$state_file" "TARGET_DIR" 2>/dev/null || true)"
+  app_url_value="$(read_env_value "$state_file" "APP_URL" 2>/dev/null || true)"
   access_mode_value="$(read_env_value "$state_file" "ACCESS_MODE" 2>/dev/null || true)"
   domain_value="$(read_env_value "$state_file" "DOMAIN" 2>/dev/null || true)"
   proxy_value="$(read_env_value "$state_file" "PROXY" 2>/dev/null || true)"
+  proxy_managed_value="$(read_env_value "$state_file" "PROXY_MANAGED" 2>/dev/null || true)"
+  tls_enabled_value="$(read_env_value "$state_file" "TLS_ENABLED" 2>/dev/null || true)"
   tls_managed_value="$(read_env_value "$state_file" "TLS_MANAGED" 2>/dev/null || true)"
   acme_provider_value="$(read_env_value "$state_file" "ACME_PROVIDER" 2>/dev/null || true)"
 
@@ -1874,9 +2917,12 @@ detect_deployment_state_file_status() {
   STATE_FILE_DEPLOY_STATUS="$status_value"
   STATE_FILE_DEPLOY_VERSION="$version_value"
   STATE_FILE_TARGET_DIR="$target_dir_value"
+  STATE_FILE_APP_URL="$app_url_value"
   STATE_FILE_ACCESS_MODE="$access_mode_value"
   STATE_FILE_DOMAIN="$domain_value"
   STATE_FILE_PROXY="$proxy_value"
+  STATE_FILE_PROXY_MANAGED="$proxy_managed_value"
+  STATE_FILE_TLS_ENABLED="$tls_enabled_value"
   STATE_FILE_TLS_MANAGED="$tls_managed_value"
   STATE_FILE_ACME_PROVIDER="$acme_provider_value"
 
@@ -1906,6 +2952,15 @@ detect_deployment_state_file_status() {
     return
   }
 
+  env_app_url="$(read_env_value "$TARGET_DIR/.env" "APP_URL" 2>/dev/null || true)"
+  if [[ -z "$app_url_value" ]]; then
+    app_url_value="$env_app_url"
+  fi
+  if [[ -n "$app_url_value" ]] && ! http_url_is_valid "$app_url_value"; then
+    DEPLOYMENT_STATE_FILE_STATUS="invalid"
+    return
+  fi
+
   if [[ -n "$access_mode_value" ]]; then
     case "$access_mode_value" in
       managed_https|external_proxy|direct_http) ;;
@@ -1919,6 +2974,26 @@ detect_deployment_state_file_status() {
   if [[ -n "$proxy_value" ]]; then
     case "$proxy_value" in
       nginx|external|none) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ -n "$proxy_managed_value" ]]; then
+    case "$proxy_managed_value" in
+      true|false) ;;
+      *)
+        DEPLOYMENT_STATE_FILE_STATUS="invalid"
+        return
+        ;;
+    esac
+  fi
+
+  if [[ -n "$tls_enabled_value" ]]; then
+    case "$tls_enabled_value" in
+      true|false) ;;
       *)
         DEPLOYMENT_STATE_FILE_STATUS="invalid"
         return
@@ -1944,6 +3019,22 @@ detect_deployment_state_file_status() {
         return
         ;;
     esac
+  fi
+
+  if [[ -z "$access_mode_value" || -z "$proxy_value" || -z "$proxy_managed_value" || -z "$tls_enabled_value" || -z "$tls_managed_value" || -z "$acme_provider_value" ]]; then
+    local metadata_line=""
+    while IFS= read -r metadata_line; do
+      case "$metadata_line" in
+        APP_URL=*) STATE_FILE_APP_URL="${metadata_line#APP_URL=}" ;;
+        ACCESS_MODE=*) [[ -n "$STATE_FILE_ACCESS_MODE" ]] || STATE_FILE_ACCESS_MODE="${metadata_line#ACCESS_MODE=}" ;;
+        DOMAIN=*) [[ -n "$STATE_FILE_DOMAIN" ]] || STATE_FILE_DOMAIN="${metadata_line#DOMAIN=}" ;;
+        PROXY=*) [[ -n "$STATE_FILE_PROXY" ]] || STATE_FILE_PROXY="${metadata_line#PROXY=}" ;;
+        PROXY_MANAGED=*) [[ -n "$STATE_FILE_PROXY_MANAGED" ]] || STATE_FILE_PROXY_MANAGED="${metadata_line#PROXY_MANAGED=}" ;;
+        TLS_ENABLED=*) [[ -n "$STATE_FILE_TLS_ENABLED" ]] || STATE_FILE_TLS_ENABLED="${metadata_line#TLS_ENABLED=}" ;;
+        TLS_MANAGED=*) [[ -n "$STATE_FILE_TLS_MANAGED" ]] || STATE_FILE_TLS_MANAGED="${metadata_line#TLS_MANAGED=}" ;;
+        ACME_PROVIDER=*) [[ -n "$STATE_FILE_ACME_PROVIDER" ]] || STATE_FILE_ACME_PROVIDER="${metadata_line#ACME_PROVIDER=}" ;;
+      esac
+    done < <(infer_compatibility_access_metadata "${app_url_value:-http://127.0.0.1:3000}")
   fi
 
   DEPLOYMENT_STATE_FILE_STATUS="present"
@@ -2092,6 +3183,7 @@ detect_existing_deployment_status() {
   detect_deployment_state_file_status
   if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
     CURRENT_INSTALL_VERSION="$STATE_FILE_DEPLOY_VERSION"
+    CURRENT_APP_URL="${STATE_FILE_APP_URL:-$CURRENT_APP_URL}"
   fi
   if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "invalid" ]]; then
     append_deployment_issue "部署状态文件异常：$(deployment_state_file_path)"
@@ -2129,6 +3221,10 @@ detect_existing_deployment_status() {
 
   if [[ "$CURRENT_INSTALL_VERSION" == "未知" || "$CURRENT_INSTALL_VERSION" == "未安装" ]]; then
     append_deployment_issue '未能识别当前安装版本。'
+  fi
+
+  if [[ "$STATE_FILE_DEPLOY_STATUS" == "partial" && "$RUNTIME_SERVICE_STATUS" == "running" && "$HEALTH_CHECK_STATUS" == "healthy" ]]; then
+    DEPLOYMENT_STATUS_CLASS="partial"
   fi
 
   if [[ "${#DEPLOYMENT_ISSUES[@]}" -gt 0 ]]; then
@@ -2180,6 +3276,24 @@ remove_arcade_atlas_docker_images() {
   done
 }
 
+remove_managed_https_resources() {
+  if ! managed_proxy_owned && ! managed_tls_owned; then
+    return
+  fi
+
+  ensure_sudo
+  if $SUDO test -L "$MANAGED_NGINX_SITE_ENABLED_PATH" || $SUDO test -e "$MANAGED_NGINX_SITE_ENABLED_PATH"; then
+    $SUDO rm -f "$MANAGED_NGINX_SITE_ENABLED_PATH"
+  fi
+  if $SUDO test -e "$MANAGED_NGINX_SITE_AVAILABLE_PATH"; then
+    $SUDO rm -f "$MANAGED_NGINX_SITE_AVAILABLE_PATH"
+  fi
+  if managed_tls_owned; then
+    $SUDO rm -rf "$MANAGED_TLS_DIR" "$MANAGED_ACME_WEBROOT" "$MANAGED_ACME_HOME"
+  fi
+  reload_nginx_if_valid || true
+}
+
 show_reset_deployment_summary() {
   local env_file="$TARGET_DIR/.env"
   local data_path="$TARGET_DIR/data"
@@ -2194,7 +3308,7 @@ show_reset_deployment_summary() {
   log "  - $TARGET_DIR/node_modules"
   log "  - $TARGET_DIR/dist"
   log "  - $TARGET_DIR/build（如果存在）"
-  log "  - $TARGET_DIR/.deploy"
+  log "  - $TARGET_DIR/.deploy（会保留 deployment-state 以便受管 HTTPS 重建时识别资源所有权）"
   log "  - Arcade Atlas Docker 容器"
   log '保留：'
   log "  - $TARGET_DIR/.env"
@@ -2204,12 +3318,23 @@ show_reset_deployment_summary() {
 }
 
 perform_reset_cleanup() {
+  local state_file state_backup=""
+  state_file="$(deployment_state_file_path)"
+  if [[ -f "$state_file" ]]; then
+    state_backup="$(mktemp)"
+    cp "$state_file" "$state_backup"
+  fi
   stop_node_service_for_cleanup
   remove_arcade_atlas_docker_container
   remove_path_force "$TARGET_DIR/node_modules"
   remove_path_force "$TARGET_DIR/dist"
   remove_path_force "$TARGET_DIR/build"
   remove_path_force "$TARGET_DIR/.deploy"
+  if [[ -n "$state_backup" ]]; then
+    ensure_directory_available "$(dirname "$state_file")"
+    cp "$state_backup" "$state_file"
+    rm -f "$state_backup"
+  fi
 }
 
 perform_reset_deployment() {
@@ -2287,6 +3412,7 @@ perform_full_cleanup() {
   stop_node_service_for_cleanup
   remove_arcade_atlas_docker_container
   remove_arcade_atlas_docker_images
+  remove_managed_https_resources
   cd /
   remove_path_force "$TARGET_DIR"
   log 'Arcade Atlas 已完全清理，当前环境已恢复到未安装状态。'
@@ -2298,17 +3424,17 @@ prompt_existing_installation_action() {
 
   SELECTED_ACTION="upgrade"
   if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
-    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" || "$DEPLOYMENT_STATUS_CLASS" == "partial" ]]; then
       return
     fi
     fail_step '检测到异常部署，非交互模式不会自动删除或重置。' '请改用交互模式执行重置部署，或先手动修复现有环境。'
   fi
 
-  if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+  if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" || "$DEPLOYMENT_STATUS_CLASS" == "partial" ]]; then
     cat <<'HEALTHY_DEPLOYMENT_MENU'
 
-当前部署状态：已安装且健康
-  [1] 升级当前版本
+当前部署状态：已安装且可继续维护
+  [1] 升级 / 修复当前部署
   [2] 重置部署（保留业务数据）
   [3] 完全清理 Arcade Atlas
   [4] 退出
@@ -2328,7 +3454,7 @@ ABNORMAL_DEPLOYMENT_MENU
   fi
 
   while true; do
-    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" ]]; then
+    if [[ "$DEPLOYMENT_STATUS_CLASS" == "healthy" || "$DEPLOYMENT_STATUS_CLASS" == "partial" ]]; then
       read -r -p '请输入 1-4: ' choice
       case "$choice" in
         1) SELECTED_ACTION="upgrade"; return ;;
@@ -2350,14 +3476,19 @@ ABNORMAL_DEPLOYMENT_MENU
 
 show_final_summary() {
   local env_file="$TARGET_DIR/.env"
-  local app_url auth_mode login_url callback_url username allowlist deployed_version
+  local app_url auth_mode login_url callback_url username allowlist deployed_version port listen_host
   app_url="$(read_env_value "$env_file" "APP_URL")"
   auth_mode="$(read_env_value "$env_file" "AUTH_MODE")"
   login_url="${app_url%/}/login"
   deployed_version="$(read_version_from_directory "$TARGET_DIR" 2>/dev/null || printf '未知')"
+  port="$(read_env_value "$env_file" "PORT" 2>/dev/null || printf '3000')"
+  listen_host="$APP_BIND_HOST_VALUE"
+  if [[ "$MODE" == "docker" ]]; then
+    listen_host="$HOST_PORT_BIND_IP_VALUE"
+  fi
   detect_deployment_state_file_status
 
-  step 'Arcade Atlas 部署完成'
+  step "$FINAL_SUMMARY_HEADER"
   log "版本：$deployed_version"
   log "服务状态：$SERVICE_STATUS"
   log "API：$API_STATUS"
@@ -2368,13 +3499,34 @@ show_final_summary() {
   log "访问地址：$app_url"
   log "后台登录地址：$login_url"
   if [[ "$DEPLOYMENT_STATE_FILE_STATUS" == "present" ]]; then
+    log "部署状态：${STATE_FILE_DEPLOY_STATUS:-未记录}"
     log "访问模式：${STATE_FILE_ACCESS_MODE:-未记录}"
     log "代理：${STATE_FILE_PROXY:-未记录}"
+    log "代理所有权：${STATE_FILE_PROXY_MANAGED:-未记录}"
+    log "HTTPS：${STATE_FILE_TLS_ENABLED:-未记录}"
     log "TLS 生命周期管理：${STATE_FILE_TLS_MANAGED:-未记录}"
+    log "证书提供方：${STATE_FILE_ACME_PROVIDER:-未记录}"
     if [[ -n "$STATE_FILE_DOMAIN" ]]; then
       log "域名：$STATE_FILE_DOMAIN"
     fi
   fi
+  log "应用监听：${listen_host}:$port"
+
+  case "${STATE_FILE_ACCESS_MODE:-$ACCESS_MODE}" in
+    external_proxy)
+      log "请将现有反向代理 upstream 指向：http://127.0.0.1:$port"
+      log "健康检查：http://127.0.0.1:$port/health"
+      ;;
+    managed_https)
+      if [[ "${STATE_FILE_DEPLOY_STATUS:-}" == "partial" ]]; then
+        warn 'Arcade Atlas 应用已成功部署，但 HTTPS 证书申请或启用失败。'
+        warn "当前临时访问地址：http://${STATE_FILE_DOMAIN:-$ACCESS_DOMAIN}"
+        warn '请修复 DNS / 80 端口 / ACME 问题后重新执行部署脚本。'
+      else
+        log '自动续期：已启用（acme.sh cron）'
+      fi
+      ;;
+  esac
 
   case "$auth_mode" in
     local)
@@ -2453,6 +3605,7 @@ handle_existing_installation() {
 }
 
 main() {
+  local port=""
   parse_args "$@"
   step '检查系统环境'
   detect_os
@@ -2461,6 +3614,7 @@ main() {
   detect_installation_state
   detect_existing_deployment_status
   show_detection_summary
+  prompt_runtime_mode_if_needed
 
   step '准备项目代码'
   if [[ "$INSTALL_STATE" == "installed" ]]; then
@@ -2482,16 +3636,22 @@ main() {
   prepare_env_file
   validate_database_path_for_mode "$TARGET_DIR/.env"
   check_port
+  port="$(read_env_value "$TARGET_DIR/.env" "PORT")"
 
+  step '[1/8] 部署 Arcade Atlas'
   if [[ "$MODE" == "docker" ]]; then
-    step '启动 Docker Compose 服务'
     run_docker_deploy
   else
-    step '启动 Node 服务'
     run_node_deploy
   fi
+
+  step '[2/8] 验证应用健康状态'
+  run_health_check "$port"
+  run_access_mode_post_deploy
 
   show_final_summary
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

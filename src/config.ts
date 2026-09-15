@@ -1,5 +1,6 @@
 import './env';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 
 export type AuthMode = 'local' | 'github' | 'both';
@@ -76,6 +77,30 @@ function parsePort(value: string | undefined, fallback: number): number {
   }
 
   return port;
+}
+
+function parseBindHost(value: string | undefined, fallback: string): string {
+  const candidate = value?.trim() || fallback;
+  if (!candidate) {
+    throw new Error('APP_BIND_HOST cannot be empty.');
+  }
+
+  if (candidate === 'localhost' || net.isIP(candidate) !== 0) {
+    return candidate;
+  }
+
+  throw new Error('APP_BIND_HOST must be localhost or a valid IPv4/IPv6 address.');
+}
+
+function parseCsvList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function resolveDatabasePath(value: string | undefined): string {
@@ -177,9 +202,11 @@ export const config = {
   appVersion: readAppVersion(),
   appUrl: parseAppUrl(process.env.APP_URL, 'http://localhost:3000'),
   port: parsePort(process.env.PORT, 3000),
+  bindHost: parseBindHost(process.env.APP_BIND_HOST, '0.0.0.0'),
   databasePath: resolveDatabasePath(process.env.DATABASE_PATH),
   sessionCookieName: 'arcade_atlas_session',
   oauthStateCookieName: 'arcade_atlas_oauth_state',
+  trustProxyCidrs: parseCsvList(process.env.TRUST_PROXY_CIDRS),
   allowFirstLogin: parseBoolean(process.env.ALLOW_FIRST_LOGIN, false),
   authMode: parseAuthMode(process.env.AUTH_MODE, oauthEnvConfig ? 'github' : 'local'),
   oauthEnvConfig,
