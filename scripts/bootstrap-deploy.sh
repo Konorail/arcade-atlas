@@ -898,7 +898,11 @@ apply_access_mode_runtime_defaults() {
       PROXY_MANAGED="true"
       TLS_MANAGED="true"
       ACME_PROVIDER_VALUE="letsencrypt"
-      APP_BIND_HOST_VALUE="0.0.0.0"
+      if [[ "$MODE" == "docker" ]]; then
+        APP_BIND_HOST_VALUE="0.0.0.0"
+      else
+        APP_BIND_HOST_VALUE="127.0.0.1"
+      fi
       HOST_PORT_BIND_IP_VALUE="127.0.0.1"
       TRUST_PROXY_CIDRS_VALUE="127.0.0.1/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
       ;;

@@ -115,6 +115,17 @@ PY
 
 test_access_mode_runtime_defaults() {
   MODE="docker"
+  ACCESS_MODE="managed_https"
+  apply_access_mode_runtime_defaults
+  assert_eq "0.0.0.0" "$APP_BIND_HOST_VALUE" "docker managed https should keep container listener reachable"
+  assert_eq "127.0.0.1" "$HOST_PORT_BIND_IP_VALUE" "docker managed https should bind published port to localhost"
+
+  MODE="node"
+  ACCESS_MODE="managed_https"
+  apply_access_mode_runtime_defaults
+  assert_eq "127.0.0.1" "$APP_BIND_HOST_VALUE" "node managed https should bind runtime to localhost"
+
+  MODE="docker"
   ACCESS_MODE="external_proxy"
   apply_access_mode_runtime_defaults
   assert_eq "0.0.0.0" "$APP_BIND_HOST_VALUE" "docker external proxy should keep container listener reachable"
