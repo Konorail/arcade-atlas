@@ -1,6 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
+const proxyaddr: { compile(value: string | readonly string[]): (address: string, index: number) => boolean } = require('proxy-addr');
 import { config } from './config';
 import { closeDatabase, getDatabaseHealth } from './db';
 import {
@@ -58,6 +59,10 @@ const app = express();
 const viewsDir = path.join(process.cwd(), 'views');
 const publicDir = path.join(process.cwd(), 'public');
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+const trustProxy =
+  config.trustProxyCidrs.length > 0
+    ? proxyaddr.compile(config.trustProxyCidrs)
+    : false;
 const machineStatusLabels = {
   normal: '🟢 正常',
   maintenance: '🟡 维护中',
@@ -99,6 +104,7 @@ const adminRouteRateLimit = rateLimit({
 
 app.set('view engine', 'ejs');
 app.set('views', viewsDir);
+app.set('trust proxy', trustProxy);
 app.use(express.static(publicDir));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
@@ -806,8 +812,8 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   respondError(request, response, error, statusCode);
 });
 
-const server = app.listen(config.port, () => {
-  console.log(`${config.appName} is running at ${config.appUrl}`);
+const server = app.listen(config.port, config.bindHost, () => {
+  console.log(`${config.appName} is running at ${config.appUrl} via ${config.bindHost}:${config.port}`);
 });
 
 let shuttingDown = false;

@@ -80,6 +80,9 @@ npm run start
 | `APP_NAME` | 站点名称 | `Arcade Atlas` |
 | `APP_URL` | 对外完整根地址；用于二维码和 OAuth callback | `http://localhost:3000` |
 | `PORT` | HTTP 监听端口 | `3000` |
+| `APP_BIND_HOST` | Node 模式下应用监听地址 | `0.0.0.0` |
+| `HOST_PORT_BIND_IP` | Docker 模式发布到宿主机的监听地址 | `0.0.0.0` |
+| `TRUST_PROXY_CIDRS` | 受信代理 CIDR 列表；留空表示不信任代理头 | 空 |
 | `DATABASE_PATH` | SQLite 文件；相对路径基于项目工作目录 | `./data/arcade-atlas.sqlite` |
 | `AUTH_MODE` | `local` / `github` / `both` | 无 GitHub 配置时为 `local` |
 | `LOCAL_ADMIN_USERNAME` | 本地管理员用户名 | 空 |
@@ -128,7 +131,18 @@ bash ./scripts/bootstrap-deploy-local.sh --mode node
 
 脚本只支持 Debian / Ubuntu，并使用 `set -euo pipefail`。它会检测安装状态、Git 状态、运行模式、health、部署状态文件和版本；保留现有 `.env`，只补充缺失键；升级前用 SQLite Backup API 创建一致性数据库快照并备份 `data/`；随后执行 build、停旧服务、migration、启动和严格 health 检查。
 
-脚本以根目录 `VERSION` 识别代码版本，以 `.deploy/deployment-state.env` 记录已成功部署版本。存在未提交代码时拒绝自动 `git pull`。关键失败不会静默继续。
+脚本现在会单独管理“运行模式”和“访问模式”：
+
+- 运行模式：`docker` / `node`
+- 访问模式：`managed_https` / `external_proxy` / `direct_http`
+
+访问模式语义：
+
+- `managed_https`：脚本只管理 **Arcade Atlas 自己创建** 的 Nginx / ACME / TLS 资源，自动申请 Let's Encrypt，应用端口仅绑定 localhost
+- `external_proxy`：用户已有 1Panel、宝塔、Nginx、Caddy、Traefik、Cloudflare Tunnel 等入口；脚本不接管其代理和证书，只把应用绑定到 localhost，并输出 upstream
+- `direct_http`：不启用 HTTPS，直接暴露应用端口，适合测试或内网
+
+脚本以根目录 `VERSION` 识别代码版本，以 `.deploy/deployment-state.env` 记录已成功部署版本以及访问模式元数据（如 `ACCESS_MODE`、`PROXY`、`PROXY_MANAGED`、`TLS_ENABLED`、`TLS_MANAGED`）。其中 `TLS_MANAGED` 表示 TLS 生命周期是否由 Arcade Atlas 部署器负责，并不等同于“站点当前是否使用 HTTPS”。
 
 升级命令、备份位置、重置/清理边界和回滚限制见 [DEPLOYMENT.md](./DEPLOYMENT.md)。仓库没有 systemd unit 或 PM2 配置；正式环境优先使用 Docker Compose，Node 模式仅使用脚本实现的 PID 文件与 `nohup`。
 

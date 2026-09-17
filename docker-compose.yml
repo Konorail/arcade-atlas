@@ -11,9 +11,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: ${PORT:-3000}
+      APP_BIND_HOST: ${APP_BIND_HOST:-0.0.0.0}
+      TRUST_PROXY_CIDRS: ${TRUST_PROXY_CIDRS:-}
       DATABASE_PATH: ${DATABASE_PATH:-./data/arcade-atlas.sqlite}
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "${HOST_PORT_BIND_IP:-0.0.0.0}:${PORT:-3000}:${PORT:-3000}"
     volumes:
       - ./data:/app/data
     healthcheck:
