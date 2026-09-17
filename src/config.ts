@@ -92,15 +92,42 @@ function parseBindHost(value: string | undefined, fallback: string): string {
   throw new Error('APP_BIND_HOST must be localhost or a valid IPv4/IPv6 address.');
 }
 
-function parseCsvList(value: string | undefined): string[] {
+function isValidIpOrCidr(value: string): boolean {
+  if (net.isIP(value) !== 0) {
+    return true;
+  }
+
+  const [address, prefixLength, ...extra] = value.split('/');
+  if (!address || !prefixLength || extra.length > 0 || !/^\d+$/.test(prefixLength)) {
+    return false;
+  }
+
+  const version = net.isIP(address);
+  if (version === 0) {
+    return false;
+  }
+
+  const prefix = Number(prefixLength);
+  return prefix >= 0 && prefix <= (version === 4 ? 32 : 128);
+}
+
+function parseTrustedProxyCidrs(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
 
-  return value
+  const entries = value
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+
+  for (const entry of entries) {
+    if (!isValidIpOrCidr(entry)) {
+      throw new Error(`TRUST_PROXY_CIDRS contains an invalid IP or CIDR entry: ${entry}`);
+    }
+  }
+
+  return entries;
 }
 
 function resolveDatabasePath(value: string | undefined): string {
@@ -206,7 +233,7 @@ export const config = {
   databasePath: resolveDatabasePath(process.env.DATABASE_PATH),
   sessionCookieName: 'arcade_atlas_session',
   oauthStateCookieName: 'arcade_atlas_oauth_state',
-  trustProxyCidrs: parseCsvList(process.env.TRUST_PROXY_CIDRS),
+  trustProxyCidrs: parseTrustedProxyCidrs(process.env.TRUST_PROXY_CIDRS),
   allowFirstLogin: parseBoolean(process.env.ALLOW_FIRST_LOGIN, false),
   authMode: parseAuthMode(process.env.AUTH_MODE, oauthEnvConfig ? 'github' : 'local'),
   oauthEnvConfig,
