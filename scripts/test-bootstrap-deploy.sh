@@ -31,7 +31,7 @@ APP_URL=http://atlas.example.com
 PORT=3000
 APP_BIND_HOST=0.0.0.0
 HOST_PORT_BIND_IP=127.0.0.1
-TRUST_PROXY_CIDRS=127.0.0.1/8
+TRUST_PROXY_CIDRS=127.0.0.0/8
 DATABASE_PATH=./data/arcade-atlas.sqlite
 EOF
 
@@ -86,7 +86,7 @@ APP_URL=https://atlas.example.com
 PORT=3000
 APP_BIND_HOST=127.0.0.1
 HOST_PORT_BIND_IP=127.0.0.1
-TRUST_PROXY_CIDRS=127.0.0.1/8
+TRUST_PROXY_CIDRS=127.0.0.0/8
 DATABASE_PATH=./data/arcade-atlas.sqlite
 EOF
   cat >"$TARGET_DIR/.deploy/deployment-state.env" <<'EOF'

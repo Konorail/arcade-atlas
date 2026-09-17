@@ -904,7 +904,7 @@ apply_access_mode_runtime_defaults() {
         APP_BIND_HOST_VALUE="127.0.0.1"
       fi
       HOST_PORT_BIND_IP_VALUE="127.0.0.1"
-      TRUST_PROXY_CIDRS_VALUE="127.0.0.1/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+      TRUST_PROXY_CIDRS_VALUE="127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
       ;;
     external_proxy)
       PROXY_KIND="external"
@@ -917,7 +917,7 @@ apply_access_mode_runtime_defaults() {
         APP_BIND_HOST_VALUE="127.0.0.1"
       fi
       HOST_PORT_BIND_IP_VALUE="127.0.0.1"
-      TRUST_PROXY_CIDRS_VALUE="127.0.0.1/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+      TRUST_PROXY_CIDRS_VALUE="127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
       ;;
     direct_http)
       PROXY_KIND="none"
