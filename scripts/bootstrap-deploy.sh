@@ -2736,11 +2736,18 @@ run_managed_https_fresh_flow() {
 
 run_managed_https_upgrade_flow() {
   local port="$1"
-  local previous_app_url previous_deploy_status
+  local previous_app_url previous_deploy_status total_steps current_step needs_certificate_repair needs_app_url_update
   previous_app_url="$(read_env_value "$TARGET_DIR/.env" "APP_URL" 2>/dev/null || true)"
   previous_deploy_status="${STATE_FILE_DEPLOY_STATUS:-healthy}"
+  needs_certificate_repair="false"
+  needs_app_url_update="false"
+  [[ ! -f "$MANAGED_TLS_FULLCHAIN_PATH" || ! -f "$MANAGED_TLS_PRIVKEY_PATH" ]] && needs_certificate_repair="true"
+  [[ "$previous_app_url" != "https://${ACCESS_DOMAIN:-${STATE_FILE_DOMAIN:-$(extract_host_from_url "$previous_app_url")}}" ]] && needs_app_url_update="true"
+  total_steps=4
+  [[ "$needs_certificate_repair" == "true" ]] && total_steps=$((total_steps + 1))
+  [[ "$needs_app_url_update" == "true" ]] && total_steps=$((total_steps + 1))
 
-  step '[3/5] 校验受管 HTTPS 资源'
+  step "[3/$total_steps] 校验受管 HTTPS 资源"
   ACCESS_DOMAIN="${ACCESS_DOMAIN:-${STATE_FILE_DOMAIN:-$(extract_host_from_url "$previous_app_url")}}"
   [[ -n "$ACCESS_DOMAIN" ]] || fail_step '无法从现有部署中识别受管 HTTPS 域名。'
   DESIRED_APP_URL="https://$ACCESS_DOMAIN"
@@ -2749,21 +2756,24 @@ run_managed_https_upgrade_flow() {
   apply_access_mode_runtime_defaults
   install_apt_packages nginx
   ensure_managed_https_directories
-  if [[ ! -f "$MANAGED_TLS_FULLCHAIN_PATH" || ! -f "$MANAGED_TLS_PRIVKEY_PATH" ]]; then
-    step '[4/5] 修复证书资源'
+  current_step=4
+  if [[ "$needs_certificate_repair" == "true" ]]; then
+    step "[$current_step/$total_steps] 修复证书资源"
     issue_managed_https_certificate || fail_step '受管 HTTPS 证书缺失且自动修复失败。'
+    current_step=$((current_step + 1))
   fi
 
   install_managed_nginx_config https "$port"
 
-  if [[ "$previous_app_url" != "$DESIRED_APP_URL" ]]; then
-    step '[4/5] 更新应用外部地址'
+  if [[ "$needs_app_url_update" == "true" ]]; then
+    step "[$current_step/$total_steps] 更新应用外部地址"
     set_access_runtime_env_values "$TARGET_DIR/.env"
     restart_application_runtime
     run_health_check "$port"
+    current_step=$((current_step + 1))
   fi
 
-  step '[5/5] 验证 HTTPS 健康状态'
+  step "[$current_step/$total_steps] 验证 HTTPS 健康状态"
   if ! verify_https_redirect || ! verify_https_health; then
     if [[ -n "$previous_app_url" && "$previous_app_url" != "$DESIRED_APP_URL" ]]; then
       warn '升级后的 HTTPS 验证失败，正在恢复原 APP_URL。'
