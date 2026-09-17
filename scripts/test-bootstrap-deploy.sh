@@ -136,10 +136,16 @@ test_access_mode_runtime_defaults() {
   apply_access_mode_runtime_defaults
   assert_eq "127.0.0.1" "$APP_BIND_HOST_VALUE" "node external proxy should bind runtime to localhost"
 
+  MODE="docker"
   ACCESS_MODE="direct_http"
   apply_access_mode_runtime_defaults
-  assert_eq "0.0.0.0" "$APP_BIND_HOST_VALUE" "direct http should expose node runtime"
-  assert_eq "0.0.0.0" "$HOST_PORT_BIND_IP_VALUE" "direct http should expose docker publish ip"
+  assert_eq "0.0.0.0" "$APP_BIND_HOST_VALUE" "direct http should expose the docker runtime"
+  assert_eq "0.0.0.0" "$HOST_PORT_BIND_IP_VALUE" "direct http should expose the docker publish ip"
+
+  MODE="node"
+  ACCESS_MODE="direct_http"
+  apply_access_mode_runtime_defaults
+  assert_eq "0.0.0.0" "$APP_BIND_HOST_VALUE" "direct http should expose the node runtime"
 }
 
 test_state_file_round_trip
