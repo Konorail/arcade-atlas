@@ -2743,7 +2743,7 @@ run_managed_https_upgrade_flow() {
   needs_app_url_update="false"
   [[ ! -f "$MANAGED_TLS_FULLCHAIN_PATH" || ! -f "$MANAGED_TLS_PRIVKEY_PATH" ]] && needs_certificate_repair="true"
   [[ "$previous_app_url" != "https://${ACCESS_DOMAIN:-${STATE_FILE_DOMAIN:-$(extract_host_from_url "$previous_app_url")}}" ]] && needs_app_url_update="true"
-  total_steps=4
+  total_steps=5
   [[ "$needs_certificate_repair" == "true" ]] && total_steps=$((total_steps + 1))
   [[ "$needs_app_url_update" == "true" ]] && total_steps=$((total_steps + 1))
 
@@ -2763,7 +2763,9 @@ run_managed_https_upgrade_flow() {
     current_step=$((current_step + 1))
   fi
 
+  step "[$current_step/$total_steps] 启用 HTTPS 代理配置"
   install_managed_nginx_config https "$port"
+  current_step=$((current_step + 1))
 
   if [[ "$needs_app_url_update" == "true" ]]; then
     step "[$current_step/$total_steps] 更新应用外部地址"
